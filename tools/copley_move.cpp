@@ -203,6 +203,21 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    // request_operational_state() only pumps send_receive() while it waits
+    // for OP -- it never calls axis.update(), so a fault arising from the
+    // PDO mapping/assignment going live at the OPERATIONAL transition
+    // itself (as opposed to anything we command afterward) would otherwise
+    // be invisible until the enable loop's first iteration, indistinguishable
+    // from a fault caused by the enable sequence. Check immediately.
+    axis.update();
+    master.send_receive();
+    if (axis.has_fault()) {
+        auto s = axis.snapshot();
+        std::printf("NOTE: fault already present immediately upon reaching OPERATIONAL, "
+                    "BEFORE any enable command was sent: err=0x%04X%s\n",
+                    s.error_code, s.sto_active ? " (STO_ACTIVE)" : "");
+    }
+
     axis.enable();
     std::printf("Enabling axis %s...\n", axis_name(args.axis));
     cia402::DriveState last_state = axis.snapshot().state;
