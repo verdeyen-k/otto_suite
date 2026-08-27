@@ -131,8 +131,17 @@ int main(int argc, char **argv) {
     zeroerr::configure_zeroerr_pdos(master, slave_index);
     master.configure_pdos();
 
-    if (!master.request_operational_state()) {
-        std::fprintf(stderr, "error: bus did not reach OPERATIONAL state -- aborting\n");
+    // Fault-reset the CiA402 way BEFORE requesting full OPERATIONAL, not
+    // after: a fault-reset controlword pulse may only take effect while
+    // still at PRE-OP/SAFE-OP on this hardware, and a slave whose own
+    // application-layer fault is what's blocking the AL-level SAFE_OP ->
+    // OPERATIONAL transition would otherwise be a chicken-and-egg
+    // deadlock -- OP required before we ever try clearing the fault that
+    // itself prevents reaching OP. Confirmed necessary in practice: a
+    // straggler eRob refusing OP with a clean working counter and no AL
+    // error traced back to exactly this ordering.
+    if (!master.wait_for_safe_op()) {
+        std::fprintf(stderr, "error: bus did not reach SAFE_OP -- aborting\n");
         print_unhealthy_slaves(master);
         return 1;
     }
@@ -146,7 +155,7 @@ int main(int argc, char **argv) {
 
     if (actuator.has_fault()) {
         auto s = actuator.snapshot();
-        std::printf("Pre-existing fault (error_code=0x%04X%s). Resetting...\n", s.error_code,
+        std::printf("Pre-existing fault (error_code=0x%04X%s). Resetting (at SAFE_OP)...\n", s.error_code,
                     s.sto_active ? ", STO_ACTIVE" : "");
         actuator.fault_reset();
         for (int i = 0; i < cycles_for(1.0) && !g_stop.load(); ++i) {
@@ -158,6 +167,12 @@ int main(int argc, char **argv) {
             std::fprintf(stderr, "error: fault did not clear -- aborting\n");
             return 1;
         }
+    }
+
+    if (!master.request_operational_state()) {
+        std::fprintf(stderr, "error: bus did not reach OPERATIONAL state -- aborting\n");
+        print_unhealthy_slaves(master);
+        return 1;
     }
 
     actuator.enable();
