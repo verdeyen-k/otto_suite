@@ -102,11 +102,22 @@ int main(int argc, char **argv) {
     }
     master.configure_pdos();
 
-    if (!master.request_operational_state()) {
-        std::fprintf(stderr, "error: bus did not reach OPERATIONAL state\n");
+    // SAFE_OP is the actual minimum for input PDO data (statusword,
+    // position, etc.) to be valid -- if the bus can't even reach that,
+    // there's nothing meaningful to print. Full OPERATIONAL is attempted
+    // too but not required: this tool never applies outputs, so a bus
+    // stuck below OP for some other reason (a fault, a watchdog issue)
+    // should still show its state instead of a bare abort.
+    if (!master.wait_for_safe_op()) {
+        std::fprintf(stderr, "error: bus did not reach SAFE_OP -- no input PDO data would be valid\n");
         return 1;
     }
-    std::printf("Bus is OPERATIONAL. Press Ctrl+C to stop.\n\n");
+    bool reached_op = master.request_operational_state();
+    std::printf("Bus reached SAFE_OP%s. Press Ctrl+C to stop.\n\n", reached_op ? " and OPERATIONAL" : "");
+    if (!reached_op) {
+        std::printf("NOTE: did not reach OPERATIONAL -- state below is still live (SAFE_OP inputs are valid),\n"
+                     "      but check for a fault/error_code explaining why OP wasn't reached.\n\n");
+    }
 
     std::vector<zeroerr::ZeroErrActuator> actuators;
     actuators.reserve(target_slaves.size());

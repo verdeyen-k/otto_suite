@@ -79,6 +79,10 @@ void SoemMaster::configure_pdos() {
     }
 }
 
+bool SoemMaster::wait_for_safe_op(int timeout_us) {
+    return ecx_statecheck(ctx_, 0, EC_STATE_SAFE_OP, timeout_us) == EC_STATE_SAFE_OP;
+}
+
 bool SoemMaster::request_operational_state(int retries, int timeout_us) {
     ctx_->slavelist[0].state = EC_STATE_OPERATIONAL;
     ecx_writestate(ctx_, 0);

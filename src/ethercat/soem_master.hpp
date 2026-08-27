@@ -53,6 +53,19 @@ public:
     // Triggers every registered config_func.
     void configure_pdos();
 
+    // Polls (via direct AL status reads, not cyclic PDO exchange -- no
+    // send_receive() needed first) until the bus reaches at least SAFE_OP,
+    // or times out. SAFE_OP is the minimum needed for input PDO data
+    // (statusword, position, etc.) to be valid -- it specifically means
+    // "inputs valid, outputs safe/inactive" -- unlike OPERATIONAL, it
+    // requires no cyclic process-data exchange to reach, since config_map()
+    // already drives the PRE-OP -> SAFE-OP transition. Passive/diagnostic
+    // tools that never need outputs applied (e.g. zeroerr_state) should
+    // check this instead of request_operational_state(), so a bus that's
+    // stuck below OP for some other reason (a fault, a watchdog issue)
+    // still yields valid, explainable state instead of a bare abort.
+    bool wait_for_safe_op(int timeout_us = 6'000'000);
+
     // Requests OPERATIONAL state and drives the transition through --
     // reaching OP requires several cycles of valid process-data exchange
     // while the request is pending, not just a single state write. Returns
