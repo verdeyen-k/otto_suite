@@ -34,6 +34,12 @@ T read_field(const ethercat::SoemMaster &master, int slave_index, int offset) {
 // switch return success (accepted) well before the switch is complete.
 bool wait_for_mode_display(ethercat::SoemMaster &master, int slave_index, std::uint16_t axis_offset,
                             std::int8_t expected_mode) {
+    // Absolute-time scheduling, not sleep_for after variable-length work
+    // (see soem_master.cpp's SoemMaster::wait_for_safe_op() for why a
+    // relative sleep compounds drift across a loop) -- harmless here
+    // since this is just a bounded settle-poll, not a cyclic exchange,
+    // but kept consistent with every other retry loop in this codebase.
+    auto next_wake = std::chrono::steady_clock::now();
     for (int i = 0; i < 50; ++i) {
         std::int8_t display = 0;
         int wkc = master.sdo_read(slave_index, cia402::kModesOfOperationDisplay + axis_offset, 0, &display,
@@ -41,7 +47,8 @@ bool wait_for_mode_display(ethercat::SoemMaster &master, int slave_index, std::u
         if (wkc > 0 && display == expected_mode) {
             return true;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        next_wake += std::chrono::milliseconds(10);
+        std::this_thread::sleep_until(next_wake);
     }
     return false;
 }

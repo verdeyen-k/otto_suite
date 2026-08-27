@@ -187,10 +187,12 @@ int main(int argc, char **argv) {
                     s.sto_active ? ", STO_ACTIVE" : "");
         axis.fault_reset();
         axis.clear_latching_faults();
+        auto next_wake = std::chrono::steady_clock::now();
         for (int i = 0; i < cycles_for(1.0) && !g_stop.load(); ++i) {
             axis.update();
             master.send_receive();
-            std::this_thread::sleep_for(kCycle);
+            next_wake += kCycle;
+            std::this_thread::sleep_until(next_wake);
         }
         if (axis.has_fault()) {
             std::fprintf(stderr, "error: fault did not clear (%s) -- aborting\n", context);
@@ -233,6 +235,7 @@ int main(int argc, char **argv) {
     std::printf("Enabling axis %s...\n", axis_name(args.axis));
     cia402::DriveState last_state = axis.snapshot().state;
     bool reached_operational = false;
+    auto next_wake = std::chrono::steady_clock::now();
     for (int i = 0; i < cycles_for(5.0) && !g_stop.load(); ++i) {
         axis.update();
         master.send_receive();
@@ -245,7 +248,8 @@ int main(int argc, char **argv) {
             reached_operational = true;
             break;
         }
-        std::this_thread::sleep_for(kCycle);
+        next_wake += kCycle;
+        std::this_thread::sleep_until(next_wake);
     }
     if (!reached_operational) {
         std::fprintf(stderr, "error: did not reach OPERATION_ENABLED within 5s -- aborting\n");
@@ -256,6 +260,7 @@ int main(int argc, char **argv) {
                 args.velocity_counts_per_s, args.ramp_s, args.duration_s);
 
     const int total_cycles = cycles_for(args.duration_s);
+    next_wake = std::chrono::steady_clock::now();
     for (int i = 0; i < total_cycles && !g_stop.load(); ++i) {
         double elapsed_s = i * kCycleSeconds;
         double fraction = args.ramp_s > 0.0 ? std::min(1.0, elapsed_s / args.ramp_s) : 1.0;
@@ -276,26 +281,31 @@ int main(int argc, char **argv) {
                     s.velocity_actual_counts_per_s, s.position_actual_counts, s.following_error_counts,
                     s.torque_actual_raw, s.has_fault ? (s.sto_active ? "STO_ACTIVE" : "FAULT") : "-");
         std::fflush(stdout);
-        std::this_thread::sleep_for(kCycle);
+        next_wake += kCycle;
+        std::this_thread::sleep_until(next_wake);
     }
 
     std::printf("Ramping down to zero before disabling...\n");
     const int ramp_down_cycles = cycles_for(args.ramp_s > 0.0 ? args.ramp_s : 1.0);
+    next_wake = std::chrono::steady_clock::now();
     for (int i = 0; i < ramp_down_cycles; ++i) {
         double fraction = 1.0 - static_cast<double>(i) / ramp_down_cycles;
         auto command = static_cast<std::int32_t>(args.velocity_counts_per_s * fraction);
         axis.update();
         axis.set_target_velocity_counts_per_s(command);
         master.send_receive();
-        std::this_thread::sleep_for(kCycle);
+        next_wake += kCycle;
+        std::this_thread::sleep_until(next_wake);
     }
 
     std::printf("Disabling and closing bus.\n");
     axis.disable();
+    next_wake = std::chrono::steady_clock::now();
     for (int i = 0; i < cycles_for(1.0); ++i) {
         axis.update();
         master.send_receive();
-        std::this_thread::sleep_for(kCycle);
+        next_wake += kCycle;
+        std::this_thread::sleep_until(next_wake);
     }
     master.close();
     return 0;

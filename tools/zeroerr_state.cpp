@@ -130,6 +130,7 @@ int main(int argc, char **argv) {
     const int print_every =
         args.rate_hz > 0 ? std::max(1, static_cast<int>(1.0 / args.rate_hz / (cycle.count() / 1e6))) : 1;
     int cycle_count = 0;
+    auto next_wake = std::chrono::steady_clock::now();
 
     while (!g_stop.load()) {
         for (auto &actuator : actuators) {
@@ -190,7 +191,8 @@ int main(int argc, char **argv) {
             std::fflush(stdout);
         }
         ++cycle_count;
-        std::this_thread::sleep_for(cycle);
+        next_wake += cycle;
+        std::this_thread::sleep_until(next_wake);
     }
 
     std::printf("\nClosing bus.\n");

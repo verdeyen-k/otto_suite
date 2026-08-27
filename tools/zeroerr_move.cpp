@@ -158,10 +158,12 @@ int main(int argc, char **argv) {
         std::printf("Pre-existing fault (error_code=0x%04X%s). Resetting (at SAFE_OP)...\n", s.error_code,
                     s.sto_active ? ", STO_ACTIVE" : "");
         actuator.fault_reset();
+        auto next_wake = std::chrono::steady_clock::now();
         for (int i = 0; i < cycles_for(1.0) && !g_stop.load(); ++i) {
             actuator.update();
             master.send_receive();
-            std::this_thread::sleep_for(kCycle);
+            next_wake += kCycle;
+            std::this_thread::sleep_until(next_wake);
         }
         if (actuator.has_fault()) {
             std::fprintf(stderr, "error: fault did not clear -- aborting\n");
@@ -179,6 +181,7 @@ int main(int argc, char **argv) {
     std::printf("Enabling...\n");
     cia402::DriveState last_state = actuator.snapshot().state;
     bool reached_operational = false;
+    auto next_wake = std::chrono::steady_clock::now();
     for (int i = 0; i < cycles_for(5.0) && !g_stop.load(); ++i) {
         actuator.update();
         master.send_receive();
@@ -191,7 +194,8 @@ int main(int argc, char **argv) {
             reached_operational = true;
             break;
         }
-        std::this_thread::sleep_for(kCycle);
+        next_wake += kCycle;
+        std::this_thread::sleep_until(next_wake);
     }
     if (!reached_operational) {
         std::fprintf(stderr, "error: did not reach OPERATION_ENABLED within 5s -- aborting\n");
@@ -204,6 +208,7 @@ int main(int argc, char **argv) {
                 target_deg, args.ramp_s, args.duration_s);
 
     const int total_cycles = cycles_for(args.duration_s);
+    next_wake = std::chrono::steady_clock::now();
     for (int i = 0; i < total_cycles && !g_stop.load(); ++i) {
         double elapsed_s = i * kCycleSeconds;
         double fraction = args.ramp_s > 0.0 ? std::min(1.0, elapsed_s / args.ramp_s) : 1.0;
@@ -223,15 +228,18 @@ int main(int argc, char **argv) {
         std::printf("  cmd=%7.2f pos=%7.2f vel=%7.2f deg/s fault=%s\033[K\n", command_deg, s.position_deg,
                     s.velocity_deg_per_s, s.has_fault ? (s.sto_active ? "STO_ACTIVE" : "FAULT") : "-");
         std::fflush(stdout);
-        std::this_thread::sleep_for(kCycle);
+        next_wake += kCycle;
+        std::this_thread::sleep_until(next_wake);
     }
 
     std::printf("Disabling and closing bus.\n");
     actuator.disable();
+    next_wake = std::chrono::steady_clock::now();
     for (int i = 0; i < cycles_for(1.0); ++i) {
         actuator.update();
         master.send_receive();
-        std::this_thread::sleep_for(kCycle);
+        next_wake += kCycle;
+        std::this_thread::sleep_until(next_wake);
     }
     master.close();
     return 0;
