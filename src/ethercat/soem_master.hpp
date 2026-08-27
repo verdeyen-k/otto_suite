@@ -87,17 +87,19 @@ public:
     // deciding to act on it.
     void configure_pdos(std::uint32_t dc_sync0_cycle_ns = 5'000'000);
 
-    // Polls (via direct AL status reads, not cyclic PDO exchange -- no
-    // send_receive() needed first) until the bus reaches at least SAFE_OP,
-    // or times out. SAFE_OP is the minimum needed for input PDO data
-    // (statusword, position, etc.) to be valid -- it specifically means
-    // "inputs valid, outputs safe/inactive" -- unlike OPERATIONAL, it
-    // requires no cyclic process-data exchange to reach, since config_map()
-    // already drives the PRE-OP -> SAFE-OP transition. Passive/diagnostic
-    // tools that never need outputs applied (e.g. zeroerr_state) should
-    // check this instead of request_operational_state(), so a bus that's
-    // stuck below OP for some other reason (a fault, a watchdog issue)
-    // still yields valid, explainable state instead of a bare abort.
+    // Polls until the bus reaches at least SAFE_OP, or times out.
+    // Reaching SAFE_OP itself needs no cyclic process-data exchange
+    // (config_map() already drives the PRE-OP -> SAFE-OP transition), but
+    // this still pumps send_receive() throughout the wait anyway (self-
+    // paced, same pattern as request_operational_state()) rather than
+    // handing ecx_statecheck a real timeout -- otherwise this entire wait
+    // sends zero real cyclic frames, and a DC-capable slave's clock (and
+    // its SYNC0 pulse, started in configure_pdos()) gets nothing to lock
+    // onto until well after this returns. Passive/diagnostic tools that
+    // never need outputs applied (e.g. zeroerr_state) should check this
+    // instead of request_operational_state(), so a bus that's stuck below
+    // OP for some other reason (a fault, a watchdog issue) still yields
+    // valid, explainable state instead of a bare abort.
     bool wait_for_safe_op(int timeout_us = 6'000'000);
 
     // Requests OPERATIONAL state and drives the transition through --

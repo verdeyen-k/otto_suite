@@ -1,5 +1,6 @@
 #include "ethercat/soem_master.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -108,7 +109,26 @@ void SoemMaster::configure_pdos(std::uint32_t dc_sync0_cycle_ns) {
 }
 
 bool SoemMaster::wait_for_safe_op(int timeout_us) {
-    return ecx_statecheck(ctx_, 0, EC_STATE_SAFE_OP, timeout_us) == EC_STATE_SAFE_OP;
+    // Same fix already applied to request_operational_state(), never
+    // carried over here: a real timeout handed to ecx_statecheck makes it
+    // spend that whole wait internally polling AL status via BRD only --
+    // it never sends real cyclic process data. That means, until this
+    // function returns, a DC-capable slave's clock (and now its SYNC0
+    // pulse, started in configure_pdos()) has had zero real cyclic frames
+    // to lock onto, no matter how long request_operational_state()'s own
+    // settle period runs afterward. Pump process data ourselves instead,
+    // sampling state with a near-zero timeout, so real cyclic exchange
+    // (and DC convergence) starts as early as possible -- right after
+    // configure_pdos(), not only once SAFE_OP is already confirmed.
+    const int retries = std::max(1, timeout_us / 1000);
+    for (int i = 0; i < retries; ++i) {
+        send_receive();
+        if (ecx_statecheck(ctx_, 0, EC_STATE_SAFE_OP, 0) == EC_STATE_SAFE_OP) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
 }
 
 bool SoemMaster::request_operational_state(int retries, int dc_settle_us) {
