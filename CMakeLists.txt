@@ -36,6 +36,9 @@ target_link_libraries(zeroerr PUBLIC cia402 ethercat)
 add_executable(zeroerr_move tools/zeroerr_move.cpp)
 target_link_libraries(zeroerr_move PRIVATE zeroerr)
 
+add_executable(zeroerr_move_all tools/zeroerr_move_all.cpp)
+target_link_libraries(zeroerr_move_all PRIVATE zeroerr)
+
 add_executable(zeroerr_state tools/zeroerr_state.cpp)
 target_link_libraries(zeroerr_state PRIVATE zeroerr)
 
@@ -47,6 +50,9 @@ target_link_libraries(copley PUBLIC cia402 ethercat)
 
 add_executable(copley_move tools/copley_move.cpp)
 target_link_libraries(copley_move PRIVATE copley)
+
+add_executable(copley_move_all tools/copley_move_all.cpp)
+target_link_libraries(copley_move_all PRIVATE copley)
 
 add_executable(copley_state tools/copley_state.cpp)
 target_link_libraries(copley_state PRIVATE copley)
