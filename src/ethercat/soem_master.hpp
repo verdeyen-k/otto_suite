@@ -156,7 +156,7 @@ public:
     // specifically needing an extended warm-up for their drift filter to
     // converge -- still experimental, and worth revisiting since this
     // number was never derived from a ZeroErr spec, only tuning.
-    bool request_operational_state(int retries = 3000, int dc_settle_us = 1'000'000);
+    bool request_operational_state(int retries = 3000, int dc_settle_us = 10'000'000);
 
     // Exchanges one cycle of process data. Returns the working counter;
     // callers should compare against expected_wkc() to detect a
