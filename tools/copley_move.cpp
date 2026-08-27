@@ -100,6 +100,19 @@ int cycles_for(double seconds) { return static_cast<int>(seconds / kCycleSeconds
 
 const char *axis_name(copley::Axis axis) { return axis == copley::Axis::A ? "A" : "B"; }
 
+// request_operational_state() is a WHOLE-BUS outcome (state is written to
+// slave 0, broadcast) -- if it fails, a completely different slave than
+// the one this tool is targeting could be why. Print every slave not
+// already at OPERATIONAL, independent of any CiA-402 interpretation.
+void print_unhealthy_slaves(const ethercat::SoemMaster &master) {
+    for (const auto &s : master.read_all_slave_states()) {
+        if (s.al_state != 0x08 /* EC_STATE_OPERATIONAL */) {
+            std::fprintf(stderr, "  slave [%d] name='%s' AL state=0x%02X status=0x%04X (%s)\n", s.slave_index,
+                         s.name.c_str(), s.al_state, s.al_status_code, s.al_status_string.c_str());
+        }
+    }
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -138,6 +151,7 @@ int main(int argc, char **argv) {
 
     if (!master.request_operational_state()) {
         std::fprintf(stderr, "error: bus did not reach OPERATIONAL state -- aborting\n");
+        print_unhealthy_slaves(master);
         return 1;
     }
 

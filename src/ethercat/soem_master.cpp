@@ -42,6 +42,18 @@ std::uint32_t SoemMaster::slave_vendor_id(int slave_index) const { return ctx_->
 
 std::uint32_t SoemMaster::slave_product_code(int slave_index) const { return ctx_->slavelist[slave_index].eep_id; }
 
+std::vector<SoemMaster::SlaveState> SoemMaster::read_all_slave_states() const {
+    ecx_readstate(ctx_);
+    std::vector<SlaveState> states;
+    states.reserve(slave_count_);
+    for (int i = 1; i <= slave_count_; ++i) {
+        const auto &slave = ctx_->slavelist[i];
+        states.push_back(SlaveState{i, slave.name, slave.state, slave.ALstatuscode,
+                                     ec_ALstatuscode2string(slave.ALstatuscode)});
+    }
+    return states;
+}
+
 std::vector<int> SoemMaster::find_slaves_by_identity(std::uint32_t vendor_id, std::uint32_t product_code) const {
     std::vector<int> matches;
     for (int i = 1; i <= slave_count_; ++i) {

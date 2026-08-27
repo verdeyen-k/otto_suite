@@ -35,6 +35,25 @@ public:
     [[nodiscard]] std::uint32_t slave_vendor_id(int slave_index) const;
     [[nodiscard]] std::uint32_t slave_product_code(int slave_index) const;
 
+    struct SlaveState {
+        int slave_index;
+        std::string name;
+        std::uint16_t al_state;         // raw AL state; bit 0x10 set means SAFE_OP/etc + ERROR
+        std::uint16_t al_status_code;   // 0 if none
+        std::string al_status_string;   // ec_ALstatuscode2string(al_status_code)
+    };
+
+    // Reads and returns EVERY slave's current EtherCAT AL state and status
+    // code (ecx_readstate() + per-slave state/ALstatuscode) -- independent
+    // of any CiA-402/application-layer interpretation. Useful specifically
+    // when request_operational_state()/wait_for_safe_op() fails: that
+    // failure is a WHOLE-BUS outcome (state is written to slave 0,
+    // broadcast), so a stuck slave completely unrelated to whichever axis
+    // a tool happens to be targeting can be the actual reason. Mirrors the
+    // diagnostic SOEM's own ec_sample.c/slaveinfo print in their own
+    // failure branches.
+    [[nodiscard]] std::vector<SlaveState> read_all_slave_states() const;
+
     // Returns 1-based slave positions matching the given identity. Call
     // after scan().
     [[nodiscard]] std::vector<int> find_slaves_by_identity(std::uint32_t vendor_id, std::uint32_t product_code) const;
