@@ -111,8 +111,6 @@ bool SoemMaster::request_operational_state(int retries, int dc_settle_us) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
-    ctx_->slavelist[0].state = EC_STATE_OPERATIONAL;
-    ecx_writestate(ctx_, 0);
     // `timeout_us` is intentionally NOT handed to ecx_statecheck here:
     // that function polls the AL status register in its own internal
     // loop (a separate BRD read, not process data) and does not send any
@@ -123,7 +121,26 @@ bool SoemMaster::request_operational_state(int retries, int dc_settle_us) {
     // Instead we keep control of the pacing ourselves: one process-data
     // cycle, one near-instant state sample, repeat -- so cyclic frames
     // never stop flowing throughout the whole retry window.
+    //
+    // ecx_writestate() is its own datagram, separate from the cyclic
+    // process-data frames send_receive() exchanges every cycle -- if that
+    // one broadcast request is dropped or corrupted for a given slave (more
+    // plausible on a bigger topology with more hops through multiple
+    // junctions), that slave never learns it should transition and will
+    // sit at SAFE_OP indefinitely no matter how long the loop below keeps
+    // sampling, since nothing re-sends the request. Confirmed on real
+    // hardware: on a 9-slave bus, a different, seemingly healthy subset of
+    // slaves (clean working counter, no AL error) fails to reach
+    // OPERATIONAL each run -- true non-determinism, not a per-slave
+    // config/hardware issue, exactly what a dropped one-shot state-request
+    // frame would produce. Re-issuing it periodically (not just once)
+    // gives a dropped request another chance.
+    constexpr int kResendEveryNRetries = 50;  // ~50ms at the loop's 1ms pace
     for (int i = 0; i < retries; ++i) {
+        if (i % kResendEveryNRetries == 0) {
+            ctx_->slavelist[0].state = EC_STATE_OPERATIONAL;
+            ecx_writestate(ctx_, 0);
+        }
         send_receive();
         if (ecx_statecheck(ctx_, 0, EC_STATE_OPERATIONAL, 0) == EC_STATE_OPERATIONAL) {
             return true;
