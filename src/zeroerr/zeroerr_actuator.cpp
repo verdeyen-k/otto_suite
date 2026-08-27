@@ -75,6 +75,33 @@ std::optional<std::uint16_t> ZeroErrActuator::read_error_code_live() const {
     return value;
 }
 
+namespace {
+constexpr std::uint16_t kSm2ParametersIndex = 0x1C32;  // outputs
+constexpr std::uint16_t kSm3ParametersIndex = 0x1C33;  // inputs
+constexpr std::uint8_t kSmEventMissedSubindex = 0x0C;
+constexpr std::uint8_t kSyncErrorSubindex = 0x20;
+}  // namespace
+
+std::optional<std::uint16_t> ZeroErrActuator::read_sm_event_missed(bool outputs) const {
+    std::uint16_t value = 0;
+    int wkc = master_.sdo_read(slave_index_, outputs ? kSm2ParametersIndex : kSm3ParametersIndex,
+                                kSmEventMissedSubindex, &value, sizeof(value));
+    if (wkc <= 0) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+std::optional<bool> ZeroErrActuator::read_sync_error(bool outputs) const {
+    std::uint8_t value = 0;
+    int wkc = master_.sdo_read(slave_index_, outputs ? kSm2ParametersIndex : kSm3ParametersIndex,
+                                kSyncErrorSubindex, &value, sizeof(value));
+    if (wkc <= 0) {
+        return std::nullopt;
+    }
+    return value != 0;
+}
+
 void ZeroErrActuator::set_target_angle_deg(double target_deg) {
     last_commanded_deg_ = target_deg;
     write_field<std::int32_t>(master_, slave_index_, pdo_layout::kTargetPositionOffset, deg_to_counts(target_deg));

@@ -138,12 +138,13 @@ int main(int argc, char **argv) {
         master.send_receive();
 
         if (cycle_count % print_every == 0) {
-            // Move the cursor back up over the previous block (one line per
-            // actuator) so each print overwrites in place instead of
+            // Move the cursor back up over the previous block (two lines
+            // per actuator) so each print overwrites in place instead of
             // scrolling -- skip on the very first print, nothing to
             // overwrite yet.
+            constexpr int kLinesPerActuator = 2;
             if (cycle_count != 0) {
-                std::printf("\033[%zuA", actuators.size());
+                std::printf("\033[%zuA", actuators.size() * kLinesPerActuator);
             }
             for (std::size_t i = 0; i < actuators.size(); ++i) {
                 const auto s = actuators[i].snapshot();
@@ -167,6 +168,24 @@ int main(int argc, char **argv) {
                     s.controlword_raw, s.position_counts, s.position_deg, s.velocity_actual_counts_per_s,
                     s.velocity_deg_per_s, s.effort_actual_raw, s.digital_inputs_raw, s.digital_outputs_raw,
                     s.mode_of_operation_display, s.error_code, fault_flags(s), live_err_field);
+
+                // DC sync diagnostics (manual p.42, Table 4-8) -- the
+                // slave's own record of whether the master is actually
+                // meeting its cyclic timing, direct evidence for whether
+                // an RT kernel would help versus guessing from symptoms.
+                auto missed_sm2 = actuators[i].read_sm_event_missed(/*outputs=*/true);
+                auto missed_sm3 = actuators[i].read_sm_event_missed(/*outputs=*/false);
+                auto sync_err_sm2 = actuators[i].read_sync_error(/*outputs=*/true);
+                auto sync_err_sm3 = actuators[i].read_sync_error(/*outputs=*/false);
+                char missed_field[64];
+                std::snprintf(missed_field, sizeof(missed_field), "sm_event_missed out=%s in=%s",
+                              missed_sm2.has_value() ? std::to_string(*missed_sm2).c_str() : "READ_FAILED",
+                              missed_sm3.has_value() ? std::to_string(*missed_sm3).c_str() : "READ_FAILED");
+                char sync_err_field[48];
+                std::snprintf(sync_err_field, sizeof(sync_err_field), "sync_error out=%s in=%s",
+                              sync_err_sm2.has_value() ? (*sync_err_sm2 ? "YES" : "no") : "READ_FAILED",
+                              sync_err_sm3.has_value() ? (*sync_err_sm3 ? "YES" : "no") : "READ_FAILED");
+                std::printf("      %s %s\033[K\n", missed_field, sync_err_field);
             }
             std::fflush(stdout);
         }

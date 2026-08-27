@@ -69,6 +69,16 @@ public:
     // the SDO read itself failed.
     [[nodiscard]] std::optional<std::uint16_t> read_error_code_live() const;
 
+    // On-demand SDO reads of the SM2/SM3 (0x1C32/0x1C33) DC diagnostic
+    // objects (manual p.42, Table 4-8): "SM event missed" (sub-index
+    // 0x0C, a counter of missed sync events -- the slave's own record of
+    // whether the master is actually meeting its cyclic timing) and
+    // "Synchronization error" (sub-index 0x20, a bool). Direct,
+    // quantitative evidence for whether a real-time kernel would actually
+    // help, instead of guessing from symptoms alone.
+    [[nodiscard]] std::optional<std::uint16_t> read_sm_event_missed(bool outputs) const;
+    [[nodiscard]] std::optional<bool> read_sync_error(bool outputs) const;
+
     // target_deg is an absolute target angle in degrees.
     void set_target_angle_deg(double target_deg);
 
