@@ -1,5 +1,7 @@
 #include "copley/copley_axis.hpp"
 
+#include <cstdio>
+
 #include "cia402/objects.hpp"
 
 namespace copley {
@@ -49,13 +51,22 @@ void configure_copley_pdos(ethercat::SoemMaster &master, int slave_index) {
         ethercat::assign_pdos(m, idx, kSm2RxAssignmentIndex, {kAxisAFixedRxPdoIndex, kAxisBRxPdoIndex});
         ethercat::assign_pdos(m, idx, kSm3TxAssignmentIndex, {kAxisAFixedTxPdoIndex, kAxisBTxPdoIndex});
 
+        auto checked = [idx](ethercat::SoemMaster &mm, std::uint16_t index, const void *data, int size,
+                              const char *what) {
+            int wkc = mm.sdo_write(idx, index, 0, data, size);
+            if (wkc <= 0) {
+                std::fprintf(stderr, "configure_copley_pdos: SDO write FAILED (wkc=%d) slave=%d index=0x%04X (%s)\n",
+                             wkc, idx, index, what);
+            }
+        };
+
         std::uint16_t desired_state = kDesiredStateCanOpenControlsAmplifier;
-        m.sdo_write(idx, kDesiredStateIndex, 0, &desired_state, sizeof(desired_state));
-        m.sdo_write(idx, kDesiredStateIndex + kAxisBOffset, 0, &desired_state, sizeof(desired_state));
+        checked(m, kDesiredStateIndex, &desired_state, sizeof(desired_state), "Desired State, axis A");
+        checked(m, kDesiredStateIndex + kAxisBOffset, &desired_state, sizeof(desired_state), "Desired State, axis B");
 
         auto mode = static_cast<std::int8_t>(cia402::ModeOfOperation::CyclicSyncVelocity);
-        m.sdo_write(idx, cia402::kModesOfOperation, 0, &mode, sizeof(mode));
-        m.sdo_write(idx, cia402::kModesOfOperation + kAxisBOffset, 0, &mode, sizeof(mode));
+        checked(m, cia402::kModesOfOperation, &mode, sizeof(mode), "Modes of Operation, axis A");
+        checked(m, cia402::kModesOfOperation + kAxisBOffset, &mode, sizeof(mode), "Modes of Operation, axis B");
     });
 }
 
@@ -67,10 +78,13 @@ void CopleyAxis::clear_latching_faults() {
                        &kClearAllLatchingFaults, sizeof(kClearAllLatchingFaults));
 }
 
-std::uint32_t CopleyAxis::read_safety_circuit_status() const {
+std::optional<std::uint32_t> CopleyAxis::read_safety_circuit_status() const {
     std::uint32_t value = 0;
-    master_.sdo_read(slave_index_, kSafetyCircuitStatusIndex + layout_.axis_object_offset, 0, &value,
-                      sizeof(value));
+    int wkc = master_.sdo_read(slave_index_, kSafetyCircuitStatusIndex + layout_.axis_object_offset, 0, &value,
+                                sizeof(value));
+    if (wkc <= 0) {
+        return std::nullopt;
+    }
     return value;
 }
 

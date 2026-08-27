@@ -86,9 +86,16 @@ public:
 
     // Raw SDO/mailbox access. 1-based slave_index. CoE mailbox
     // communication works from PRE-OP onward -- no PDO mapping or OP state
-    // required.
-    void sdo_write(int slave_index, std::uint16_t index, std::uint8_t subindex, const void *data, int size);
-    void sdo_read(int slave_index, std::uint16_t index, std::uint8_t subindex, void *out, int size) const;
+    // required. Both return the SOEM working counter: >0 means the slave
+    // actually acknowledged the request; <=0 means it didn't (SDO abort --
+    // e.g. the object doesn't exist/isn't supported -- or a mailbox
+    // timeout). On a failed read, `out` is left UNTOUCHED (not zeroed) --
+    // SOEM's ecx_SDOread never writes the caller's buffer on an abort, so
+    // callers that pre-zero their buffer and skip checking this return
+    // value cannot tell "genuinely read zero" apart from "read failed."
+    // This matters concretely: see CopleyAxis::read_safety_circuit_status.
+    int sdo_write(int slave_index, std::uint16_t index, std::uint8_t subindex, const void *data, int size);
+    int sdo_read(int slave_index, std::uint16_t index, std::uint8_t subindex, void *out, int size) const;
 
 private:
     static int config_func_trampoline(ecx_context *context, std::uint16_t slave);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 
 #include "cia402/state_machine.hpp"
 #include "copley/copley_identity.hpp"
@@ -64,7 +65,11 @@ public:
     // SDO/mailbox round trip is much slower than one PDO cycle; call this
     // only when you're about to display it (e.g. at a throttled print
     // rate), not every cycle. See copley_identity.hpp for the bit meaning.
-    [[nodiscard]] std::uint32_t read_safety_circuit_status() const;
+    // Returns std::nullopt if the SDO read itself failed (e.g. the object
+    // isn't supported on this drive) -- distinct from a real all-zero
+    // reading, which SOEM's ecx_SDOread cannot be told apart from if the
+    // failure is silently ignored.
+    [[nodiscard]] std::optional<std::uint32_t> read_safety_circuit_status() const;
 
     [[nodiscard]] bool is_operational() const { return fsm_.is_operational(); }
     [[nodiscard]] bool has_fault() const { return fsm_.has_fault(); }

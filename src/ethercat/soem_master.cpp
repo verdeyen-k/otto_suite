@@ -114,41 +114,63 @@ void SoemMaster::read_input_bytes(int slave_index, int offset, std::uint8_t *out
     std::memcpy(out, ctx_->slavelist[slave_index].inputs + offset, len);
 }
 
-void SoemMaster::sdo_write(int slave_index, std::uint16_t index, std::uint8_t subindex, const void *data, int size) {
-    ecx_SDOwrite(ctx_, static_cast<std::uint16_t>(slave_index), index, subindex, FALSE, size, data, EC_TIMEOUTRXM);
+int SoemMaster::sdo_write(int slave_index, std::uint16_t index, std::uint8_t subindex, const void *data, int size) {
+    return ecx_SDOwrite(ctx_, static_cast<std::uint16_t>(slave_index), index, subindex, FALSE, size, data,
+                         EC_TIMEOUTRXM);
 }
 
-void SoemMaster::sdo_read(int slave_index, std::uint16_t index, std::uint8_t subindex, void *out, int size) const {
+int SoemMaster::sdo_read(int slave_index, std::uint16_t index, std::uint8_t subindex, void *out, int size) const {
     int actual_size = size;
-    ecx_SDOread(ctx_, static_cast<std::uint16_t>(slave_index), index, subindex, FALSE, &actual_size, out,
-                EC_TIMEOUTRXM);
+    return ecx_SDOread(ctx_, static_cast<std::uint16_t>(slave_index), index, subindex, FALSE, &actual_size, out,
+                        EC_TIMEOUTRXM);
 }
+
+namespace {
+// A silently-failed SDO write during PDO configuration is exactly the
+// kind of thing that produces "nothing happens and I can't tell why"
+// symptoms later -- print loudly (config_func runs once at connect time,
+// not in a hot loop, so this is cheap) rather than letting it pass
+// unnoticed like SoemMaster::sdo_write's return value otherwise allows.
+void checked_sdo_write(SoemMaster &master, int slave_index, std::uint16_t index, std::uint8_t subindex,
+                        const void *data, int size, const char *what) {
+    int wkc = master.sdo_write(slave_index, index, subindex, data, size);
+    if (wkc <= 0) {
+        std::fprintf(stderr,
+                     "soem_master: SDO write FAILED (wkc=%d) slave=%d index=0x%04X:%u (%s) -- "
+                     "configuration did NOT take effect\n",
+                     wkc, slave_index, index, subindex, what);
+    }
+}
+}  // namespace
 
 void map_pdo(SoemMaster &master, int slave_index, std::uint16_t pdo_index, const std::vector<PdoMapEntry> &entries) {
     std::uint8_t zero_count = 0;
-    master.sdo_write(slave_index, pdo_index, 0, &zero_count, sizeof(zero_count));
+    checked_sdo_write(master, slave_index, pdo_index, 0, &zero_count, sizeof(zero_count), "disable PDO for remap");
     for (std::size_t i = 0; i < entries.size(); ++i) {
         const auto &entry = entries[i];
         std::uint32_t packed = (static_cast<std::uint32_t>(entry.index) << 16) |
                                 (static_cast<std::uint32_t>(entry.subindex) << 8) |
                                 static_cast<std::uint32_t>(entry.bit_length);
         auto subindex = static_cast<std::uint8_t>(i + 1);
-        master.sdo_write(slave_index, pdo_index, subindex, &packed, sizeof(packed));
+        checked_sdo_write(master, slave_index, pdo_index, subindex, &packed, sizeof(packed), "map PDO entry");
     }
     auto count = static_cast<std::uint8_t>(entries.size());
-    master.sdo_write(slave_index, pdo_index, 0, &count, sizeof(count));
+    checked_sdo_write(master, slave_index, pdo_index, 0, &count, sizeof(count), "re-enable PDO with new mapping");
 }
 
 void assign_pdos(SoemMaster &master, int slave_index, std::uint16_t sm_assignment_index,
                   const std::vector<std::uint16_t> &pdo_indices) {
     std::uint8_t zero_count = 0;
-    master.sdo_write(slave_index, sm_assignment_index, 0, &zero_count, sizeof(zero_count));
+    checked_sdo_write(master, slave_index, sm_assignment_index, 0, &zero_count, sizeof(zero_count),
+                       "disable SM assignment for remap");
     for (std::size_t i = 0; i < pdo_indices.size(); ++i) {
         auto subindex = static_cast<std::uint8_t>(i + 1);
-        master.sdo_write(slave_index, sm_assignment_index, subindex, &pdo_indices[i], sizeof(pdo_indices[i]));
+        checked_sdo_write(master, slave_index, sm_assignment_index, subindex, &pdo_indices[i],
+                           sizeof(pdo_indices[i]), "assign PDO to SM");
     }
     auto count = static_cast<std::uint8_t>(pdo_indices.size());
-    master.sdo_write(slave_index, sm_assignment_index, 0, &count, sizeof(count));
+    checked_sdo_write(master, slave_index, sm_assignment_index, 0, &count, sizeof(count),
+                       "re-enable SM with new assignment");
 }
 
 void assign_single_pdo(SoemMaster &master, int slave_index, std::uint16_t sm_assignment_index,
