@@ -161,8 +161,18 @@ int SoemMaster::expected_wkc() const {
 }
 
 void SoemMaster::close() {
-    if (ctx_ != nullptr) {
+    // Idempotent: the destructor calls this unconditionally, so a caller
+    // that also calls it explicitly (as every tool's normal-exit path
+    // does, right before main() returns and the stack-allocated master
+    // goes out of scope) would otherwise call ecx_close() on the same
+    // context twice. Confirmed on real hardware: that second call is a
+    // double free ("free(): double free detected in tcache 2"), crashing
+    // right after a fully successful run -- every early-return/error path
+    // happened to only close once, which is why this went unnoticed until
+    // the first run that ran to completion normally.
+    if (ctx_ != nullptr && !closed_) {
         ecx_close(ctx_);
+        closed_ = true;
     }
 }
 

@@ -157,6 +157,7 @@ private:
 
     std::string ifname_;
     ecx_context *ctx_ = nullptr;
+    bool closed_ = false;
     int slave_count_ = 0;
     std::vector<std::uint8_t> io_map_;
     std::unordered_map<int, std::function<void(SoemMaster &, int)>> config_funcs_;
