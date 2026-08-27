@@ -454,6 +454,23 @@ int main(int argc, char **argv) {
     constexpr int kPrintEveryNCycles = 100;      // ~0.5s
     int cycle = 0;
 
+    // Retriggerable version of the same stagger full_shake.cpp/
+    // swerve_kinematics_test.cpp use at startup: those tools only ever
+    // wake from rest ONCE (a scripted sequence with one beginning), so a
+    // one-shot stagger was enough. A live joystick can go rest -> moving
+    // -> rest -> moving repeatedly, and every one of those onsets is a
+    // fresh synchronized-current-inrush risk if all 8 actuators start
+    // ramping in the same PDO cycle -- confirmed on real hardware: the
+    // very first nonzero drive command after this fix was missing faulted
+    // all 4 modules simultaneously. wake_cycle is reset to "now" every
+    // time the target goes from zero to nonzero; each module's steer/drive
+    // gate only opens once its own stagger slot (steer 0..3, drive 4..7,
+    // same grouping as elsewhere) has elapsed since that wake.
+    bool prev_target_nonzero = false;
+    int wake_cycle = 0;
+    std::array<bool, 4> steer_was_faulted{false, false, false, false};
+    std::array<bool, 4> drive_was_faulted{false, false, false, false};
+
     auto next_wake = std::chrono::steady_clock::now();
     while (!g_stop.load()) {
         auto received = chassis_link.try_receive_command();
@@ -521,6 +538,11 @@ int main(int argc, char **argv) {
         // supposed to be a controlled stop.
         const bool target_nonzero =
             std::hypot(target.vx_mps, target.vy_mps) > 1e-4 || std::abs(target.omega_rad_per_s) > 1e-4;
+        if (target_nonzero && !prev_target_nonzero) {
+            wake_cycle = cycle;
+        }
+        prev_target_nonzero = target_nonzero;
+
         std::array<kinematics::ModuleState, 4> desired =
             target_nonzero ? kinematics_solver.to_module_states(target) : std::array<kinematics::ModuleState, 4>{};
 
@@ -528,25 +550,51 @@ int main(int argc, char **argv) {
             steer_actuators[j].update();
             drive_axes[j].update();
 
-            double target_speed_mps = 0.0;
+            const bool steer_gate =
+                target_nonzero && cycle >= wake_cycle + static_cast<int>(j) * stagger_cycles;
+            const bool drive_gate =
+                target_nonzero && cycle >= wake_cycle + static_cast<int>(4 + j) * stagger_cycles;
+
+            kinematics::ModuleState optimized{};
             if (target_nonzero) {
-                kinematics::ModuleState optimized =
-                    kinematics::SwerveKinematics::optimize(desired[j], last_commanded_angle_rad[j]);
+                optimized = kinematics::SwerveKinematics::optimize(desired[j], last_commanded_angle_rad[j]);
+            }
+
+            if (steer_gate) {
                 const double max_angle_step = max_steer_rate_rad_s * kCycleSeconds;
                 const double angle_delta =
                     std::remainder(optimized.angle_rad - last_commanded_angle_rad[j], 2.0 * M_PI);
                 last_commanded_angle_rad[j] += clamp_magnitude(angle_delta, max_angle_step);
-                target_speed_mps = optimized.speed_mps;
             }
-            // else: angle left untouched (frozen), target_speed_mps stays
-            // 0 -- the accel limiter below coasts speed down to a stop.
+            // else: angle left untouched (frozen) -- either fully at rest,
+            // or this module's steer stagger slot hasn't opened yet.
 
+            const double target_speed_mps = drive_gate ? optimized.speed_mps : 0.0;
             const double max_speed_step = args.max_accel_mps2 * kCycleSeconds;
             const double speed_delta = target_speed_mps - last_commanded_speed_mps[j];
             last_commanded_speed_mps[j] += clamp_magnitude(speed_delta, max_speed_step);
 
             steer_actuators[j].set_target_angle_deg(last_commanded_angle_rad[j] * 180.0 / M_PI);
             drive_axes[j].set_target_velocity_counts_per_s(mps_to_counts_per_s(last_commanded_speed_mps[j]));
+
+            // Rising-edge fault logging: the earlier bring-up checkpoints
+            // print error codes, but this live loop's periodic re-arm
+            // below did not -- meaning a real hardware fault here was
+            // silently invisible except for a bare "FAULT" flag.
+            const bool sf = steer_actuators[j].has_fault();
+            if (sf && !steer_was_faulted[j]) {
+                auto s = steer_actuators[j].snapshot();
+                std::printf("[%s steer] Fault detected, error_code=0x%04X%s\n", kModuleNames[j], s.error_code,
+                            s.sto_active ? ", STO_ACTIVE" : "");
+            }
+            steer_was_faulted[j] = sf;
+            const bool df = drive_axes[j].has_fault();
+            if (df && !drive_was_faulted[j]) {
+                auto s = drive_axes[j].snapshot();
+                std::printf("[%s drive] Fault detected, error_code=0x%04X%s\n", kModuleNames[j], s.error_code,
+                            s.sto_active ? ", STO_ACTIVE" : "");
+            }
+            drive_was_faulted[j] = df;
         }
         master.send_receive();
 
