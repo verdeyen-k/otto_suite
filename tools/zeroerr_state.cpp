@@ -137,16 +137,24 @@ int main(int argc, char **argv) {
         master.send_receive();
 
         if (cycle_count % print_every == 0) {
+            // Move the cursor back up over the previous block (one line per
+            // actuator) so each print overwrites in place instead of
+            // scrolling -- skip on the very first print, nothing to
+            // overwrite yet.
+            if (cycle_count != 0) {
+                std::printf("\033[%zuA", actuators.size());
+            }
             for (std::size_t i = 0; i < actuators.size(); ++i) {
                 const auto s = actuators[i].snapshot();
                 std::printf(
                     "[%d] state=%-22s sw=0x%04X cw=0x%04X pos=%9d(%8.2f deg) vel=%9d(%8.2f deg/s) "
-                    "eff=%6d din=0x%08X dout=0x%08X mode_disp=%u err=0x%04X fault=%s\n",
+                    "eff=%6d din=0x%08X dout=0x%08X mode_disp=%u err=0x%04X fault=%s\033[K\n",
                     target_slaves[i], std::string(cia402::to_string(s.state)).c_str(), s.statusword_raw,
                     s.controlword_raw, s.position_counts, s.position_deg, s.velocity_actual_counts_per_s,
                     s.velocity_deg_per_s, s.effort_actual_raw, s.digital_inputs_raw, s.digital_outputs_raw,
                     s.mode_of_operation_display, s.error_code, fault_flags(s));
             }
+            std::fflush(stdout);
         }
         ++cycle_count;
         std::this_thread::sleep_for(cycle);
