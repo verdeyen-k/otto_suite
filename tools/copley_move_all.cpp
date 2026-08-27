@@ -157,8 +157,25 @@ bool try_clear_faults(std::vector<copley::CopleyAxis> &axes, const std::vector<T
     if (!any_fault) {
         return true;
     }
+    // fault_reset() only arms a SINGLE rising-edge pulse of the FaultReset
+    // controlword bit (see cia402::StateMachine::next_controlword_bits())
+    // -- if that one pulse doesn't land (a dropped frame, or the fault
+    // re-triggering right as it's processed), nothing resends it for the
+    // rest of this wait. Re-arm it (and re-clear the latching fault
+    // register) periodically for whichever axes are still faulted, the
+    // same way request_operational_state() resends its own one-shot
+    // request rather than sending it only once.
+    constexpr int kRearmEveryNCycles = 40;  // ~200ms at the 5ms cycle
     auto next_wake = std::chrono::steady_clock::now();
     for (int i = 0; i < cycles_for(1.0) && !g_stop.load(); ++i) {
+        if (i % kRearmEveryNCycles == 0) {
+            for (auto &a : axes) {
+                if (a.has_fault()) {
+                    a.fault_reset();
+                    a.clear_latching_faults();
+                }
+            }
+        }
         for (auto &a : axes) {
             a.update();
         }
