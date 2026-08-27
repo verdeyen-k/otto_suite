@@ -56,3 +56,6 @@ target_link_libraries(copley_move_all PRIVATE copley)
 
 add_executable(copley_state tools/copley_state.cpp)
 target_link_libraries(copley_state PRIVATE copley)
+
+add_executable(full_shake tools/full_shake.cpp)
+target_link_libraries(full_shake PRIVATE zeroerr copley)
