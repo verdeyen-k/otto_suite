@@ -138,25 +138,27 @@ bool SoemMaster::request_operational_state(int retries, int dc_settle_us) {
     constexpr int kResendEveryNRetries = 50;  // ~50ms at the loop's 1ms pace
     for (int i = 0; i < retries; ++i) {
         if (i % kResendEveryNRetries == 0) {
-            // The AL status ERROR bit (0x10) a slave reports (e.g.
-            // SAFE_OP+ERROR = 0x14, "sync manager watchdog") is the SAME
-            // bit value as EC_STATE_ACK -- it's not self-clearing, and a
-            // plain OPERATIONAL request to slave 0 does nothing for a
-            // slave already latched in it. The master must explicitly
-            // write that slave's state back with the ACK bit set before
-            // it will even attempt another transition (see SOEM's own
-            // ec_sample.c ecatcheck() thread, which does exactly this).
-            // Without this, a slave that ever latches an error here stays
-            // stuck across any number of process restarts -- confirmed on
-            // real hardware: only a full reboot (which forces the link
-            // down/up, resetting the slave's own ESC) ever cleared it,
-            // not simply re-running this tool.
-            // Send the ACK to every not-yet-OPERATIONAL slave unconditionally,
-            // not just ones currently reporting the ERROR bit -- a plain
-            // SAFE_OP (0x04, no error bit visible) that simply never
-            // transitioned is the more common symptom seen on real hardware,
-            // and an ACK write is harmless for a slave that isn't actually
-            // in an error state.
+            // Per not-yet-OPERATIONAL slave (individually, an FPWR, not
+            // just the slave-0 broadcast below), send two things every
+            // resend cycle, mirroring SOEM's own recovery logic in
+            // ec_sample.c's ecatcheck() thread:
+            //   1. An ACK (state | EC_STATE_ACK -- same bit value as the
+            //      AL status ERROR bit, e.g. SAFE_OP+ERROR = 0x14 "sync
+            //      manager watchdog"). Not self-clearing -- a slave latched
+            //      in it stays stuck across any number of process restarts
+            //      until explicitly ACKed (confirmed on real hardware: only
+            //      a full reboot, forcing the link down/up and resetting
+            //      the slave's own ESC, ever cleared it otherwise).
+            //   2. A direct OPERATIONAL request to that specific slave.
+            //      The more common symptom seen is a slave sitting at
+            //      plain SAFE_OP with no error bit at all, which the ACK
+            //      alone does nothing for -- and confirmed on real
+            //      hardware that dozens of broadcast-only OPERATIONAL
+            //      requests over 3 seconds did not unstick one either. An
+            //      individually addressed write is the one thing in the
+            //      reference recovery path we hadn't tried yet.
+            // Both writes are harmless no-ops for a slave that isn't
+            // actually in either situation.
             ecx_readstate(ctx_);
             for (int slave = 1; slave <= slave_count_; ++slave) {
                 if (ctx_->slavelist[slave].state != EC_STATE_OPERATIONAL) {
@@ -165,6 +167,8 @@ bool SoemMaster::request_operational_state(int retries, int dc_settle_us) {
                                  slave, ctx_->slavelist[slave].state,
                                  ec_ALstatuscode2string(ctx_->slavelist[slave].ALstatuscode));
                     ctx_->slavelist[slave].state = EC_STATE_SAFE_OP | EC_STATE_ACK;
+                    ecx_writestate(ctx_, slave);
+                    ctx_->slavelist[slave].state = EC_STATE_OPERATIONAL;
                     ecx_writestate(ctx_, slave);
                 }
             }
