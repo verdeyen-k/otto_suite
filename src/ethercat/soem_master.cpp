@@ -151,12 +151,17 @@ bool SoemMaster::request_operational_state(int retries, int dc_settle_us) {
             // real hardware: only a full reboot (which forces the link
             // down/up, resetting the slave's own ESC) ever cleared it,
             // not simply re-running this tool.
+            // Send the ACK to every not-yet-OPERATIONAL slave unconditionally,
+            // not just ones currently reporting the ERROR bit -- a plain
+            // SAFE_OP (0x04, no error bit visible) that simply never
+            // transitioned is the more common symptom seen on real hardware,
+            // and an ACK write is harmless for a slave that isn't actually
+            // in an error state.
             ecx_readstate(ctx_);
             for (int slave = 1; slave <= slave_count_; ++slave) {
-                if (ctx_->slavelist[slave].state & EC_STATE_ERROR) {
-                    std::fprintf(stderr,
-                                 "soem_master: slave %d latched in error state 0x%02X (%s) -- "
-                                 "acknowledging\n",
+                if (ctx_->slavelist[slave].state != EC_STATE_OPERATIONAL) {
+                    std::fprintf(stderr, "soem_master: slave %d not yet OPERATIONAL (state=0x%02X, %s) -- "
+                                          "acknowledging\n",
                                  slave, ctx_->slavelist[slave].state,
                                  ec_ALstatuscode2string(ctx_->slavelist[slave].ALstatuscode));
                     ctx_->slavelist[slave].state = EC_STATE_SAFE_OP | EC_STATE_ACK;
