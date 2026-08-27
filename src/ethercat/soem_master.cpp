@@ -139,13 +139,21 @@ void map_pdo(SoemMaster &master, int slave_index, std::uint16_t pdo_index, const
     master.sdo_write(slave_index, pdo_index, 0, &count, sizeof(count));
 }
 
-void assign_single_pdo(SoemMaster &master, int slave_index, std::uint16_t sm_assignment_index,
-                        std::uint16_t pdo_index) {
+void assign_pdos(SoemMaster &master, int slave_index, std::uint16_t sm_assignment_index,
+                  const std::vector<std::uint16_t> &pdo_indices) {
     std::uint8_t zero_count = 0;
     master.sdo_write(slave_index, sm_assignment_index, 0, &zero_count, sizeof(zero_count));
-    master.sdo_write(slave_index, sm_assignment_index, 1, &pdo_index, sizeof(pdo_index));
-    std::uint8_t one_count = 1;
-    master.sdo_write(slave_index, sm_assignment_index, 0, &one_count, sizeof(one_count));
+    for (std::size_t i = 0; i < pdo_indices.size(); ++i) {
+        auto subindex = static_cast<std::uint8_t>(i + 1);
+        master.sdo_write(slave_index, sm_assignment_index, subindex, &pdo_indices[i], sizeof(pdo_indices[i]));
+    }
+    auto count = static_cast<std::uint8_t>(pdo_indices.size());
+    master.sdo_write(slave_index, sm_assignment_index, 0, &count, sizeof(count));
+}
+
+void assign_single_pdo(SoemMaster &master, int slave_index, std::uint16_t sm_assignment_index,
+                        std::uint16_t pdo_index) {
+    assign_pdos(master, slave_index, sm_assignment_index, {pdo_index});
 }
 
 }  // namespace ethercat

@@ -117,9 +117,17 @@ struct PdoMapEntry {
 void map_pdo(SoemMaster &master, int slave_index, std::uint16_t pdo_index, const std::vector<PdoMapEntry> &entries);
 
 // The standard CANopen SM PDO assignment sequence: disable (subindex 0 :=
-// 0), point subindex 1 at `pdo_index`, re-enable (subindex 0 := 1) --
-// assigns exactly one PDO to the given sync-manager assignment object
-// (0x1C12 for RxPDO/SM2, 0x1C13 for TxPDO/SM3).
+// 0), write each PDO index at increasing sub-indices starting at 1,
+// re-enable (subindex 0 := count) -- assigns one or more PDOs to the given
+// sync-manager assignment object (0x1C12 for RxPDO/SM2, 0x1C13 for
+// TxPDO/SM3). More than one PDO in the list is a normal, documented
+// CANopen capability (e.g. Copley's manual gives 0x1C12/0x1C13 a
+// documented range of 0-4 mapped PDOs) -- used to combine a fixed PDO with
+// a custom one, e.g. addressing a second axis on a multi-axis drive.
+void assign_pdos(SoemMaster &master, int slave_index, std::uint16_t sm_assignment_index,
+                  const std::vector<std::uint16_t> &pdo_indices);
+
+// Convenience for the single-PDO case.
 void assign_single_pdo(SoemMaster &master, int slave_index, std::uint16_t sm_assignment_index,
                         std::uint16_t pdo_index);
 
