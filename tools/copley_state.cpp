@@ -142,8 +142,9 @@ int main(int argc, char **argv) {
         master.send_receive();
 
         if (cycle_count % print_every == 0) {
+            constexpr int kLinesPerTarget = 2;
             if (cycle_count != 0) {
-                std::printf("\033[%zuA", targets.size());
+                std::printf("\033[%zuA", targets.size() * kLinesPerTarget);
             }
             for (auto &t : targets) {
                 const auto s = t.handle.snapshot();
@@ -188,7 +189,8 @@ int main(int argc, char **argv) {
 
                 std::printf(
                     "[%d/%c] state=%-22s sw=0x%04X cw=0x%04X vel=%8d(cmd=%8d) pos=%10d foll_err=%7d "
-                    "torque=%6d err=0x%04X fault=%s %s %s %s\033[K\n",
+                    "torque=%6d err=0x%04X\033[K\n"
+                    "        fault=%s %s %s %s\033[K\n",
                     t.slave_index, t.axis == copley::Axis::A ? 'A' : 'B',
                     std::string(cia402::to_string(s.state)).c_str(), s.statusword_raw, s.controlword_raw,
                     s.velocity_actual_counts_per_s, s.commanded_velocity_counts_per_s, s.position_actual_counts,
