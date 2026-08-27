@@ -138,6 +138,11 @@ int SoemMaster::send_receive() {
     return ecx_receive_processdata(ctx_, EC_TIMEOUTRET);
 }
 
+int SoemMaster::expected_wkc() const {
+    const auto &group = ctx_->grouplist[0];
+    return group.outputsWKC * 2 + group.inputsWKC;
+}
+
 void SoemMaster::close() {
     if (ctx_ != nullptr) {
         ecx_close(ctx_);

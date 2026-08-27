@@ -81,7 +81,13 @@ int cycles_for(double seconds) { return static_cast<int>(seconds / kCycleSeconds
 // slave 0, broadcast) -- if it fails, a completely different slave than
 // the one this tool is targeting could be why. Print every slave not
 // already at OPERATIONAL, independent of any CiA-402 interpretation.
-void print_unhealthy_slaves(const ethercat::SoemMaster &master) {
+void print_unhealthy_slaves(ethercat::SoemMaster &master) {
+    // A slave can sit at SAFE_OP indefinitely with no AL error at all if
+    // it's simply not fully acknowledging the cyclic exchange -- compare
+    // one more actual working counter against what the IO mapping
+    // expects (same "Calculated workcounter" SOEM's own samples print).
+    int wkc = master.send_receive();
+    std::fprintf(stderr, "  working counter: actual=%d expected=%d\n", wkc, master.expected_wkc());
     for (const auto &s : master.read_all_slave_states()) {
         if (s.al_state != 0x08 /* EC_STATE_OPERATIONAL */) {
             std::fprintf(stderr, "  slave [%d] name='%s' AL state=0x%02X status=0x%04X (%s)\n", s.slave_index,

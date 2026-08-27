@@ -118,9 +118,20 @@ public:
     bool request_operational_state(int retries = 3000, int dc_settle_us = 1'000'000);
 
     // Exchanges one cycle of process data. Returns the working counter;
-    // callers should compare against the expected value to detect a
+    // callers should compare against expected_wkc() to detect a
     // dropped/incomplete cycle.
     int send_receive();
+
+    // The working counter send_receive() SHOULD reach once every mapped
+    // slave successfully processes the frame (outputsWKC*2 + inputsWKC,
+    // the same formula SOEM's own samples print as "Calculated
+    // workcounter"). Valid only after configure_pdos(). A slave that sits
+    // at SAFE_OP indefinitely with no AL error at all (see
+    // read_all_slave_states()) is worth checking against this -- if
+    // send_receive()'s actual return is consistently below this, some
+    // slave isn't fully acknowledging the exchange even though nothing
+    // is reporting a fault.
+    [[nodiscard]] int expected_wkc() const;
 
     void close();
 
