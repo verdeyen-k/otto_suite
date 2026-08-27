@@ -70,7 +70,22 @@ public:
 
     // Runs PDO mapping (ecx_config_map_group) + distributed clock config.
     // Triggers every registered config_func.
-    void configure_pdos();
+    //
+    // ecx_configdc() ALONE only measures/propagates the reference clock
+    // offset across the ring ("coarse" DC) -- it does NOT start SYNC0
+    // pulse generation on any slave; that needs the separate, explicit
+    // ecx_dcsync0() call, which this method now makes for every
+    // DC-capable slave (ctx_->slavelist[i].hasdc), using dc_sync0_cycle_ns
+    // as the requested cycle time. Without this, a slave whose firmware
+    // gates its own SAFE_OP -> OPERATIONAL transition on "is my SYNC0
+    // signal actually running" would refuse to transition indefinitely,
+    // with nothing surfaced as an AL error or CoE fault -- confirmed on
+    // real hardware via packet capture: the ESC acknowledges (WKC=1) an
+    // AL Control write requesting OPERATIONAL, yet the reported AL status
+    // never advances and the AL status code stays 0x0000 throughout. A
+    // register write being accepted is not the same as the firmware
+    // deciding to act on it.
+    void configure_pdos(std::uint32_t dc_sync0_cycle_ns = 5'000'000);
 
     // Polls (via direct AL status reads, not cyclic PDO exchange -- no
     // send_receive() needed first) until the bus reaches at least SAFE_OP,

@@ -83,9 +83,17 @@ void SoemMaster::set_config_func(int slave_index, std::function<void(SoemMaster 
     ctx_->slavelist[slave_index].PO2SOconfig = &SoemMaster::config_func_trampoline;
 }
 
-void SoemMaster::configure_pdos() {
+void SoemMaster::configure_pdos(std::uint32_t dc_sync0_cycle_ns) {
     ecx_config_map_group(ctx_, io_map_.data(), 0);
     ecx_configdc(ctx_);
+    // ecx_configdc() alone does not start SYNC0 pulse generation -- see
+    // the doc comment in the header. Explicitly start it for every
+    // DC-capable slave.
+    for (int i = 1; i <= slave_count_; ++i) {
+        if (ctx_->slavelist[i].hasdc) {
+            ecx_dcsync0(ctx_, static_cast<std::uint16_t>(i), TRUE, dc_sync0_cycle_ns, 0);
+        }
+    }
     // Deliberately NOT calling ecx_slavembxcyclic() here (SOEM's own
     // ec_sample.c does, for every CoE slave). That switches a slave's
     // mailbox into a queued/cyclic mode which requires periodic
