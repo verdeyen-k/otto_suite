@@ -138,6 +138,31 @@ bool SoemMaster::request_operational_state(int retries, int dc_settle_us) {
     constexpr int kResendEveryNRetries = 50;  // ~50ms at the loop's 1ms pace
     for (int i = 0; i < retries; ++i) {
         if (i % kResendEveryNRetries == 0) {
+            // The AL status ERROR bit (0x10) a slave reports (e.g.
+            // SAFE_OP+ERROR = 0x14, "sync manager watchdog") is the SAME
+            // bit value as EC_STATE_ACK -- it's not self-clearing, and a
+            // plain OPERATIONAL request to slave 0 does nothing for a
+            // slave already latched in it. The master must explicitly
+            // write that slave's state back with the ACK bit set before
+            // it will even attempt another transition (see SOEM's own
+            // ec_sample.c ecatcheck() thread, which does exactly this).
+            // Without this, a slave that ever latches an error here stays
+            // stuck across any number of process restarts -- confirmed on
+            // real hardware: only a full reboot (which forces the link
+            // down/up, resetting the slave's own ESC) ever cleared it,
+            // not simply re-running this tool.
+            ecx_readstate(ctx_);
+            for (int slave = 1; slave <= slave_count_; ++slave) {
+                if (ctx_->slavelist[slave].state & EC_STATE_ERROR) {
+                    std::fprintf(stderr,
+                                 "soem_master: slave %d latched in error state 0x%02X (%s) -- "
+                                 "acknowledging\n",
+                                 slave, ctx_->slavelist[slave].state,
+                                 ec_ALstatuscode2string(ctx_->slavelist[slave].ALstatuscode));
+                    ctx_->slavelist[slave].state = EC_STATE_SAFE_OP | EC_STATE_ACK;
+                    ecx_writestate(ctx_, slave);
+                }
+            }
             ctx_->slavelist[0].state = EC_STATE_OPERATIONAL;
             ecx_writestate(ctx_, 0);
         }
