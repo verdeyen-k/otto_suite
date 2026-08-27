@@ -172,19 +172,20 @@ int main(int argc, char **argv) {
 
     copley::CopleyAxis axis(master, slave_index, args.axis);
 
-    // One cycle of exchange so update() has a real statusword before we
-    // decide whether a fault reset is needed.
-    axis.update();
-    master.send_receive();
-
-    if (axis.has_fault()) {
+    // Checks for a fault and, if present, pulses the standard controlword
+    // Reset Fault bit plus the Copley-specific Latching Fault Status
+    // Register clear (manual p.69 -- a genuinely separate mechanism from
+    // the controlword bit). `context` names where in the sequence this
+    // check is happening, for the printed message. Returns false (and lets
+    // the caller abort) only if a fault was present and did not clear.
+    auto try_clear_fault = [&](const char *context) -> bool {
+        if (!axis.has_fault()) {
+            return true;
+        }
         auto s = axis.snapshot();
-        std::printf("Pre-existing fault (error_code=0x%04X%s). Resetting (at SAFE_OP)...\n", s.error_code,
+        std::printf("Fault detected (%s, error_code=0x%04X%s). Resetting...\n", context, s.error_code,
                     s.sto_active ? ", STO_ACTIVE" : "");
         axis.fault_reset();
-        // Also clear the Copley-specific Latching Fault Status Register --
-        // confirmed in the manual (p.69) as a genuinely separate mechanism
-        // from the standard controlword Reset Fault bit.
         axis.clear_latching_faults();
         for (int i = 0; i < cycles_for(1.0) && !g_stop.load(); ++i) {
             axis.update();
@@ -192,9 +193,19 @@ int main(int argc, char **argv) {
             std::this_thread::sleep_for(kCycle);
         }
         if (axis.has_fault()) {
-            std::fprintf(stderr, "error: fault did not clear -- aborting\n");
-            return 1;
+            std::fprintf(stderr, "error: fault did not clear (%s) -- aborting\n", context);
+            return false;
         }
+        return true;
+    };
+
+    // One cycle of exchange so update() has a real statusword before we
+    // decide whether a fault reset is needed.
+    axis.update();
+    master.send_receive();
+
+    if (!try_clear_fault("at SAFE_OP")) {
+        return 1;
     }
 
     if (!master.request_operational_state()) {
@@ -208,14 +219,14 @@ int main(int argc, char **argv) {
     // PDO mapping/assignment going live at the OPERATIONAL transition
     // itself (as opposed to anything we command afterward) would otherwise
     // be invisible until the enable loop's first iteration, indistinguishable
-    // from a fault caused by the enable sequence. Check immediately.
+    // from a fault caused by the enable sequence. Check -- and, unlike
+    // before, actually attempt to clear it here too, since the SAFE_OP
+    // check above ran too early to have caught a fault that only appears
+    // once this transition happens.
     axis.update();
     master.send_receive();
-    if (axis.has_fault()) {
-        auto s = axis.snapshot();
-        std::printf("NOTE: fault already present immediately upon reaching OPERATIONAL, "
-                    "BEFORE any enable command was sent: err=0x%04X%s\n",
-                    s.error_code, s.sto_active ? " (STO_ACTIVE)" : "");
+    if (!try_clear_fault("at OPERATIONAL, before any enable command")) {
+        return 1;
     }
 
     axis.enable();
