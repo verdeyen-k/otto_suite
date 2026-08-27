@@ -1,8 +1,10 @@
 #include "ethercat/soem_master.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
+#include <thread>
 
 #include "soem/soem.h"
 
@@ -83,7 +85,14 @@ bool SoemMaster::wait_for_safe_op(int timeout_us) {
     return ecx_statecheck(ctx_, 0, EC_STATE_SAFE_OP, timeout_us) == EC_STATE_SAFE_OP;
 }
 
-bool SoemMaster::request_operational_state(int retries, int timeout_us) {
+bool SoemMaster::request_operational_state(int retries, int timeout_us, int dc_settle_us) {
+    if (dc_settle_us > 0) {
+        auto settle_until = std::chrono::steady_clock::now() + std::chrono::microseconds(dc_settle_us);
+        while (std::chrono::steady_clock::now() < settle_until) {
+            send_receive();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
     ctx_->slavelist[0].state = EC_STATE_OPERATIONAL;
     ecx_writestate(ctx_, 0);
     for (int i = 0; i < retries; ++i) {

@@ -1,0 +1,204 @@
+ottoman@ottoman-control:~/SOEM/build/samples$ sudo ./slaveinfo/slaveinfo enp1s0
+SOEM (Simple Open EtherCAT Master)
+Slaveinfo
+Starting slaveinfo
+ecx_init on enp1s0 succeeded.
+9 slaves found and configured.
+Calculated workcounter 18
+
+Slave:1
+ Name:CU1128
+ Output size: 0bits
+ Input size: 0bits
+ State: 4
+ Delay: 0[ns]
+ Has DC: 1
+ DCParentport:0
+ Activeports:1.1.1.1
+ Configured address: 1001
+ Man: 00000002 ID: 04685432 Rev: 00020000
+ FMMUfunc 0:0 1:0 2:0 3:0
+ MBX length wr: 0 rd: 0 MBX protocols : 00
+ CoE details: 00 FoE details: 00 EoE details: 00 SoE details: 00
+ Ebus current: 0[mA]
+ only LRD/LWR:0
+
+Slave:2
+ Name:BE2
+ Output size: 128bits
+ Input size: 256bits
+ State: 4
+ Delay: 620[ns]
+ Has DC: 1
+ DCParentport:3
+ Activeports:1.0.0.0
+ Configured address: 1002
+ Man: 000000ab ID: 000010c0 Rev: 00010004
+ SM0 A:1000 L: 256 F:00010026 Type:1
+ SM1 A:1100 L: 256 F:00010022 Type:2
+ SM2 A:1200 L:  16 F:00010064 Type:3
+ SM3 A:1800 L:  32 F:00010020 Type:4
+ FMMU0 Ls:00000000 Ll:  16 Lsb:0 Leb:7 Ps:1200 Psb:0 Ty:02 Act:01
+ FMMU1 Ls:0000004e Ll:  32 Lsb:0 Leb:7 Ps:1800 Psb:0 Ty:01 Act:01
+ FMMU2 Ls:000000be Ll:   1 Lsb:0 Leb:7 Ps:080d Psb:0 Ty:01 Act:01
+ FMMUfunc 0:1 1:2 2:0 3:0
+ MBX length wr: 256 rd: 256 MBX protocols : 0e
+ CoE details: 0f FoE details: 01 EoE details: 01 SoE details: 00
+ Ebus current: 0[mA]
+ only LRD/LWR:0
+
+Slave:3
+ Name:BE2
+ Output size: 128bits
+ Input size: 256bits
+ State: 4
+ Delay: 1840[ns]
+ Has DC: 1
+ DCParentport:1
+ Activeports:1.0.0.0
+ Configured address: 1003
+ Man: 000000ab ID: 000010c0 Rev: 00010004
+ SM0 A:1000 L: 256 F:00010026 Type:1
+ SM1 A:1100 L: 256 F:00010022 Type:2
+ SM2 A:1200 L:  16 F:00010064 Type:3
+ SM3 A:1800 L:  32 F:00010020 Type:4
+ FMMU0 Ls:00000010 Ll:  16 Lsb:0 Leb:7 Ps:1200 Psb:0 Ty:02 Act:01
+ FMMU1 Ls:0000006e Ll:  32 Lsb:0 Leb:7 Ps:1800 Psb:0 Ty:01 Act:01
+ FMMU2 Ls:000000bf Ll:   1 Lsb:0 Leb:7 Ps:080d Psb:0 Ty:01 Act:01
+ FMMUfunc 0:1 1:2 2:0 3:0
+ MBX length wr: 256 rd: 256 MBX protocols : 0e
+ CoE details: 0f FoE details: 01 EoE details: 01 SoE details: 00
+ Ebus current: 0[mA]
+ only LRD/LWR:0
+
+Slave:4
+ Name:CU1128-B
+ Output size: 0bits
+ Input size: 0bits
+ State: 4
+ Delay: 2720[ns]
+ Has DC: 1
+ DCParentport:2
+ Activeports:1.1.1.1
+ Configured address: 1004
+ Man: 00000002 ID: 04685432 Rev: 00020001
+ FMMUfunc 0:0 1:0 2:0 3:0
+ MBX length wr: 0 rd: 0 MBX protocols : 00
+ CoE details: 00 FoE details: 00 EoE details: 00 SoE details: 00
+ Ebus current: 0[mA]
+ only LRD/LWR:0
+
+Slave:5
+ Name:ZeroErr Driver
+ Output size: 128bits
+ Input size: 144bits
+ State: 4
+ Delay: 3360[ns]
+ Has DC: 1
+ DCParentport:3
+ Activeports:1.0.0.0
+ Configured address: 1005
+ Man: 5a65726f ID: 00029252 Rev: 00000001
+ SM0 A:1000 L: 128 F:00010026 Type:1
+ SM1 A:1080 L: 128 F:00010022 Type:2
+ SM2 A:1100 L:  16 F:00010064 Type:3
+ SM3 A:1400 L:  18 F:00010020 Type:4
+ FMMU0 Ls:00000020 Ll:  16 Lsb:0 Leb:7 Ps:1100 Psb:0 Ty:02 Act:01
+ FMMU1 Ls:0000008e Ll:  18 Lsb:0 Leb:7 Ps:1400 Psb:0 Ty:01 Act:01
+ FMMU2 Ls:000000c0 Ll:   1 Lsb:0 Leb:7 Ps:080d Psb:0 Ty:01 Act:01
+ FMMUfunc 0:1 1:2 2:3 3:0
+ MBX length wr: 128 rd: 128 MBX protocols : 0c
+ CoE details: 2f FoE details: 01 EoE details: 00 SoE details: 00
+ Ebus current: 0[mA]
+ only LRD/LWR:0
+
+Slave:6
+ Name:ZeroErr Driver
+ Output size: 80bits
+ Input size: 80bits
+ State: 4
+ Delay: 4620[ns]
+ Has DC: 1
+ DCParentport:1
+ Activeports:1.0.0.0
+ Configured address: 1006
+ Man: 5a65726f ID: 00029252 Rev: 00000001
+ SM0 A:1000 L: 128 F:00010026 Type:1
+ SM1 A:1080 L: 128 F:00010022 Type:2
+ SM2 A:1100 L:  10 F:00010064 Type:3
+ SM3 A:1400 L:  10 F:00010020 Type:4
+ FMMU0 Ls:00000030 Ll:  10 Lsb:0 Leb:7 Ps:1100 Psb:0 Ty:02 Act:01
+ FMMU1 Ls:000000a0 Ll:  10 Lsb:0 Leb:7 Ps:1400 Psb:0 Ty:01 Act:01
+ FMMU2 Ls:000000c1 Ll:   1 Lsb:0 Leb:7 Ps:080d Psb:0 Ty:01 Act:01
+ FMMUfunc 0:1 1:2 2:3 3:0
+ MBX length wr: 128 rd: 128 MBX protocols : 0c
+ CoE details: 2f FoE details: 01 EoE details: 00 SoE details: 00
+ Ebus current: 0[mA]
+ only LRD/LWR:0
+
+Slave:7
+ Name:CU1128-C
+ Output size: 0bits
+ Input size: 0bits
+ State: 4
+ Delay: 5519[ns]
+ Has DC: 1
+ DCParentport:2
+ Activeports:1.0.1.1
+ Configured address: 1007
+ Man: 00000002 ID: 04685432 Rev: 00020002
+ FMMUfunc 0:0 1:0 2:0 3:0
+ MBX length wr: 0 rd: 0 MBX protocols : 00
+ CoE details: 00 FoE details: 00 EoE details: 00 SoE details: 00
+ Ebus current: 0[mA]
+ only LRD/LWR:0
+
+Slave:8
+ Name:ZeroErr Driver
+ Output size: 80bits
+ Input size: 80bits
+ State: 4
+ Delay: 6179[ns]
+ Has DC: 1
+ DCParentport:3
+ Activeports:1.0.0.0
+ Configured address: 1008
+ Man: 5a65726f ID: 00029252 Rev: 00000001
+ SM0 A:1000 L: 128 F:00010026 Type:1
+ SM1 A:1080 L: 128 F:00010022 Type:2
+ SM2 A:1100 L:  10 F:00010064 Type:3
+ SM3 A:1400 L:  10 F:00010020 Type:4
+ FMMU0 Ls:0000003a Ll:  10 Lsb:0 Leb:7 Ps:1100 Psb:0 Ty:02 Act:01
+ FMMU1 Ls:000000aa Ll:  10 Lsb:0 Leb:7 Ps:1400 Psb:0 Ty:01 Act:01
+ FMMU2 Ls:000000c2 Ll:   1 Lsb:0 Leb:7 Ps:080d Psb:0 Ty:01 Act:01
+ FMMUfunc 0:1 1:2 2:3 3:0
+ MBX length wr: 128 rd: 128 MBX protocols : 0c
+ CoE details: 2f FoE details: 01 EoE details: 00 SoE details: 00
+ Ebus current: 0[mA]
+ only LRD/LWR:0
+
+Slave:9
+ Name:ZeroErr Driver
+ Output size: 80bits
+ Input size: 80bits
+ State: 4
+ Delay: 7479[ns]
+ Has DC: 1
+ DCParentport:2
+ Activeports:1.0.0.0
+ Configured address: 1009
+ Man: 5a65726f ID: 00029252 Rev: 00000001
+ SM0 A:1000 L: 128 F:00010026 Type:1
+ SM1 A:1080 L: 128 F:00010022 Type:2
+ SM2 A:1100 L:  10 F:00010064 Type:3
+ SM3 A:1400 L:  10 F:00010020 Type:4
+ FMMU0 Ls:00000044 Ll:  10 Lsb:0 Leb:7 Ps:1100 Psb:0 Ty:02 Act:01
+ FMMU1 Ls:000000b4 Ll:  10 Lsb:0 Leb:7 Ps:1400 Psb:0 Ty:01 Act:01
+ FMMU2 Ls:000000c3 Ll:   1 Lsb:0 Leb:7 Ps:080d Psb:0 Ty:01 Act:01
+ FMMUfunc 0:1 1:2 2:3 3:0
+ MBX length wr: 128 rd: 128 MBX protocols : 0c
+ CoE details: 2f FoE details: 01 EoE details: 00 SoE details: 00
+ Ebus current: 0[mA]
+ only LRD/LWR:0
+End slaveinfo, close socket
+End program

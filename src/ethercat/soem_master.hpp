@@ -71,7 +71,18 @@ public:
     // while the request is pending, not just a single state write. Returns
     // true once OP is confirmed; callers must not assume actuators are
     // safely operable if this returns false.
-    bool request_operational_state(int retries = 40, int timeout_us = 50000);
+    //
+    // First spends `dc_settle_us` exchanging plain cyclic process data
+    // (no state change requested yet) before ever asking for OP -- a
+    // distributed-clocks bus (configure_pdos() calls ecx_configdc(); a
+    // multi-slave EtherCAT network commonly has DC enabled bus-wide even
+    // if this driver's own slaves don't care about sync) needs several
+    // cycles of real traffic for slave clocks to converge before they'll
+    // accept the OP transition. This mirrors SOEM's own ec_sample.c,
+    // which sleeps a full second here for exactly this reason -- skipping
+    // it is a real, confirmed-on-hardware way to get stuck at SAFE_OP
+    // indefinitely despite every slave being otherwise healthy.
+    bool request_operational_state(int retries = 40, int timeout_us = 50000, int dc_settle_us = 1'000'000);
 
     // Exchanges one cycle of process data. Returns the working counter;
     // callers should compare against the expected value to detect a
