@@ -1,6 +1,8 @@
 #include "copley/copley_axis.hpp"
 
+#include <chrono>
 #include <cstdio>
+#include <thread>
 
 #include "cia402/objects.hpp"
 
@@ -18,6 +20,30 @@ T read_field(const ethercat::SoemMaster &master, int slave_index, int offset) {
     T value{};
     master.read_input_bytes(slave_index, offset, reinterpret_cast<std::uint8_t *>(&value), sizeof(T));
     return value;
+}
+
+// The manual explicitly warns (p.64): "there may be some delay between
+// setting the mode of operation and the drive assuming that mode. To read
+// the active mode of operation, use object 0x6061." Desired State (0x2300)
+// switches the amplifier's control source at the same time -- polling the
+// Mode of Operation Display confirms both have actually settled before
+// this axis is handed off to the CiA-402 enable sequence. Proceeding
+// straight through OPERATIONAL into an enable attempt while the drive is
+// still mid-switchover is a plausible cause of a spurious 0x61FF "Command
+// error" on the very first enable, since the SDO writes that requested the
+// switch return success (accepted) well before the switch is complete.
+bool wait_for_mode_display(ethercat::SoemMaster &master, int slave_index, std::uint16_t axis_offset,
+                            std::int8_t expected_mode) {
+    for (int i = 0; i < 50; ++i) {
+        std::int8_t display = 0;
+        int wkc = master.sdo_read(slave_index, cia402::kModesOfOperationDisplay + axis_offset, 0, &display,
+                                   sizeof(display));
+        if (wkc > 0 && display == expected_mode) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return false;
 }
 
 }  // namespace
@@ -67,6 +93,17 @@ void configure_copley_pdos(ethercat::SoemMaster &master, int slave_index) {
         auto mode = static_cast<std::int8_t>(cia402::ModeOfOperation::CyclicSyncVelocity);
         checked(m, cia402::kModesOfOperation, &mode, sizeof(mode), "Modes of Operation, axis A");
         checked(m, cia402::kModesOfOperation + kAxisBOffset, &mode, sizeof(mode), "Modes of Operation, axis B");
+
+        if (!wait_for_mode_display(m, idx, 0x0000, mode)) {
+            std::fprintf(stderr,
+                         "configure_copley_pdos: axis A Mode of Operation Display (0x6061) did not settle to "
+                         "CSV (9) within 500ms -- proceeding anyway, but an enable attempt may be rejected\n");
+        }
+        if (!wait_for_mode_display(m, idx, kAxisBOffset, mode)) {
+            std::fprintf(stderr,
+                         "configure_copley_pdos: axis B Mode of Operation Display (0x6861) did not settle to "
+                         "CSV (9) within 500ms -- proceeding anyway, but an enable attempt may be rejected\n");
+        }
     });
 }
 
