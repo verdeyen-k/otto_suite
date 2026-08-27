@@ -237,7 +237,15 @@ bool SoemMaster::request_operational_state(int retries, int dc_settle_us) {
             ecx_writestate(ctx_, 0);
         }
         send_receive();
-        if (ecx_statecheck(ctx_, 0, EC_STATE_OPERATIONAL, 0) == EC_STATE_OPERATIONAL) {
+        // Only the very first check (right after the initial OPERATIONAL
+        // request) gets a real timeout -- every later one stays at 0 (a
+        // near-instant sample) to preserve the fix above: ecx_statecheck
+        // internally loops without ever calling send_receive() for
+        // however long its timeout is, so a real timeout here on every
+        // iteration would reintroduce the sync-manager-watchdog gap this
+        // function exists to avoid.
+        const int statecheck_timeout_us = (i == 0) ? 200000 : 0;
+        if (ecx_statecheck(ctx_, 0, EC_STATE_OPERATIONAL, statecheck_timeout_us) == EC_STATE_OPERATIONAL) {
             return true;
         }
         next_wake += cycle_period_;
