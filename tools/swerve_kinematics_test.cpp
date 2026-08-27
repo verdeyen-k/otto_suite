@@ -434,7 +434,15 @@ int main(int argc, char **argv) {
         {robot::kModulePositions[0], robot::kModulePositions[1], robot::kModulePositions[2],
          robot::kModulePositions[3]});
     std::array<double, 4> last_commanded_angle_rad{};
-    std::array<bool, 4> module_active{false, false, false, false};
+    // Separate stagger slots for steer vs. drive first-activation (steer
+    // gets slots 0..3, drive gets slots 4..7) -- pairing a module's steer
+    // and drive first commands into the SAME slot doubles the current
+    // inrush at that instant instead of spreading it out, and was
+    // confirmed on real hardware to fault the steering actuator on every
+    // module but the very first (see full_shake.cpp, which keeps these two
+    // groups fully separate for exactly this reason).
+    std::array<bool, 4> steer_active{false, false, false, false};
+    std::array<bool, 4> drive_active{false, false, false, false};
     for (std::size_t j = 0; j < 4; ++j) {
         last_commanded_angle_rad[j] = steer_actuators[j].snapshot().position_deg * M_PI / 180.0;
     }
@@ -469,14 +477,19 @@ int main(int argc, char **argv) {
         for (std::size_t j = 0; j < 4; ++j) {
             steer_actuators[j].update();
             drive_axes[j].update();
-            if (!module_active[j] && i >= static_cast<int>(j) * stagger_cycles) {
-                module_active[j] = true;
+            if (!steer_active[j] && i >= static_cast<int>(j) * stagger_cycles) {
+                steer_active[j] = true;
             }
-            if (module_active[j]) {
-                kinematics::ModuleState optimized =
-                    kinematics::SwerveKinematics::optimize(desired[j], last_commanded_angle_rad[j]);
+            if (!drive_active[j] && i >= static_cast<int>(4 + j) * stagger_cycles) {
+                drive_active[j] = true;
+            }
+            kinematics::ModuleState optimized =
+                kinematics::SwerveKinematics::optimize(desired[j], last_commanded_angle_rad[j]);
+            if (steer_active[j]) {
                 last_commanded_angle_rad[j] = optimized.angle_rad;
                 steer_actuators[j].set_target_angle_deg(optimized.angle_rad * 180.0 / M_PI);
+            }
+            if (drive_active[j]) {
                 drive_axes[j].set_target_velocity_counts_per_s(mps_to_counts_per_s(optimized.speed_mps));
             }
         }
