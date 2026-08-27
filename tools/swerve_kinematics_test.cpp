@@ -426,14 +426,55 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // last_commanded_angle_rad seeds optimize()'s reference from each
-    // module's actual measured steering angle, not zero -- otherwise the
-    // very first kinematics command could be "optimized" against a
-    // fictitious 0 rad reference and flip for no physical reason.
     kinematics::SwerveKinematics kinematics_solver(
         {robot::kModulePositions[0], robot::kModulePositions[1], robot::kModulePositions[2],
          robot::kModulePositions[3]});
     std::array<double, 4> last_commanded_angle_rad{};
+
+    // Point the wheels at phase 0's target direction BEFORE commanding any
+    // drive speed. Linearly ramping the CHASSIS vector itself from (0,0,0)
+    // does NOT gradually rotate the steering angle: every point on a
+    // straight line through the origin has the same direction as its
+    // endpoint, so atan2() commits to the final bearing the instant the
+    // magnitude leaves zero -- only speed actually ramps. Confirmed on real
+    // hardware: every steering actuator not already resting near phase 0's
+    // target angle faulted immediately on its first command, from the
+    // resulting near-instantaneous CSP position jump (up to 55 degrees in
+    // one 5ms cycle). Aligning first, with drive speed held at zero, avoids
+    // that jump entirely; the main loop below then starts from an angle
+    // that already matches what it would compute near frac=0 anyway.
+    std::array<kinematics::ModuleState, 4> phase0_desired = kinematics_solver.to_module_states(kPhases[0]);
+    std::array<double, 4> align_start_deg{};
+    std::array<double, 4> align_target_deg{};
+    for (std::size_t j = 0; j < 4; ++j) {
+        align_start_deg[j] = steer_actuators[j].snapshot().position_deg;
+        kinematics::ModuleState optimized =
+            kinematics::SwerveKinematics::optimize(phase0_desired[j], align_start_deg[j] * M_PI / 180.0);
+        align_target_deg[j] = optimized.angle_rad * 180.0 / M_PI;
+    }
+    std::printf("Aligning steering to starting direction (drive speed held at zero)...\n");
+    const int align_cycles = cycles_for(args.ramp_s) + static_cast<int>(3) * stagger_cycles;
+    std::array<bool, 4> align_active{false, false, false, false};
+    next_wake = std::chrono::steady_clock::now();
+    for (int i = 0; i < align_cycles && !g_stop.load(); ++i) {
+        update_all();
+        for (std::size_t j = 0; j < 4; ++j) {
+            if (!align_active[j] && i >= static_cast<int>(j) * stagger_cycles) {
+                align_active[j] = true;
+            }
+            if (align_active[j]) {
+                double elapsed_s = (i - static_cast<int>(j) * stagger_cycles) * kCycleSeconds;
+                double frac = args.ramp_s > 0.0 ? std::min(1.0, elapsed_s / args.ramp_s) : 1.0;
+                double angle_deg = align_start_deg[j] + (align_target_deg[j] - align_start_deg[j]) * frac;
+                steer_actuators[j].set_target_angle_deg(angle_deg);
+                last_commanded_angle_rad[j] = angle_deg * M_PI / 180.0;
+            }
+        }
+        master.send_receive();
+        next_wake += kCycle;
+        std::this_thread::sleep_until(next_wake);
+    }
+
     // Separate stagger slots for steer vs. drive first-activation (steer
     // gets slots 0..3, drive gets slots 4..7) -- pairing a module's steer
     // and drive first commands into the SAME slot doubles the current
@@ -441,11 +482,8 @@ int main(int argc, char **argv) {
     // confirmed on real hardware to fault the steering actuator on every
     // module but the very first (see full_shake.cpp, which keeps these two
     // groups fully separate for exactly this reason).
-    std::array<bool, 4> steer_active{false, false, false, false};
+    std::array<bool, 4> steer_active{true, true, true, true};
     std::array<bool, 4> drive_active{false, false, false, false};
-    for (std::size_t j = 0; j < 4; ++j) {
-        last_commanded_angle_rad[j] = steer_actuators[j].snapshot().position_deg * M_PI / 180.0;
-    }
 
     std::printf("Running kinematics phase sequence (%.1fs/phase, %.1fs total)...\n", args.phase_duration_s,
                 total_phase_seconds);
