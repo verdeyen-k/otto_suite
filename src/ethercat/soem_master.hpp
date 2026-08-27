@@ -102,16 +102,20 @@ public:
     // it is a real, confirmed-on-hardware way to get stuck at SAFE_OP
     // indefinitely despite every slave being otherwise healthy.
     //
-    // Default retry budget is generous (~10s worst case) rather than
-    // tight: confirmed on a real 9-slave bus that the straggler holding
-    // the whole group below OP varies run to run (a different eRob each
-    // time, always AL state=SAFE_OP with status "No error" -- not a
-    // fault, just not there yet), and simply retrying the same run again
-    // reliably succeeds. That's a marginal timing margin, not a stuck
-    // slave -- worth a longer one-time startup budget rather than a
-    // flaky abort. If this still fails, read_all_slave_states() on
-    // failure is what actually tells you why.
-    bool request_operational_state(int retries = 200, int timeout_us = 50000, int dc_settle_us = 1'000'000);
+    // The retry loop deliberately keeps sending a process-data cycle
+    // every ~1ms throughout (statecheck is sampled with a near-zero
+    // timeout, not handed a real one) -- ecx_statecheck's own internal
+    // wait only re-reads the AL status register, it does NOT send
+    // process data, so giving it a real timeout here reintroduces a gap
+    // between cyclic frames. Confirmed on real hardware this gap alone
+    // (previously up to 50ms per retry) can trip a slave's sync manager
+    // watchdog -- AL state SAFE_OP+ERROR, status "Sync manager
+    // watchdog" -- on a different slave each run, which looked like
+    // random flakiness until traced to this. retries=3000 at ~1ms each
+    // gives a generous ~3s worst-case budget; success is typically near-
+    // instant once frames stop having gaps. If this still fails,
+    // read_all_slave_states() on failure is what tells you why.
+    bool request_operational_state(int retries = 3000, int dc_settle_us = 1'000'000);
 
     // Exchanges one cycle of process data. Returns the working counter;
     // callers should compare against the expected value to detect a

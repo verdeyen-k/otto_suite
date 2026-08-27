@@ -103,7 +103,7 @@ bool SoemMaster::wait_for_safe_op(int timeout_us) {
     return ecx_statecheck(ctx_, 0, EC_STATE_SAFE_OP, timeout_us) == EC_STATE_SAFE_OP;
 }
 
-bool SoemMaster::request_operational_state(int retries, int timeout_us, int dc_settle_us) {
+bool SoemMaster::request_operational_state(int retries, int dc_settle_us) {
     if (dc_settle_us > 0) {
         auto settle_until = std::chrono::steady_clock::now() + std::chrono::microseconds(dc_settle_us);
         while (std::chrono::steady_clock::now() < settle_until) {
@@ -113,11 +113,22 @@ bool SoemMaster::request_operational_state(int retries, int timeout_us, int dc_s
     }
     ctx_->slavelist[0].state = EC_STATE_OPERATIONAL;
     ecx_writestate(ctx_, 0);
+    // `timeout_us` is intentionally NOT handed to ecx_statecheck here:
+    // that function polls the AL status register in its own internal
+    // loop (a separate BRD read, not process data) and does not send any
+    // cyclic frames while it waits -- passing it a real timeout here
+    // reintroduces exactly the gap that trips a slave's sync manager
+    // watchdog (confirmed on real hardware: AL state SAFE_OP+ERROR,
+    // status "Sync manager watchdog", on a different slave each run).
+    // Instead we keep control of the pacing ourselves: one process-data
+    // cycle, one near-instant state sample, repeat -- so cyclic frames
+    // never stop flowing throughout the whole retry window.
     for (int i = 0; i < retries; ++i) {
         send_receive();
-        if (ecx_statecheck(ctx_, 0, EC_STATE_OPERATIONAL, timeout_us) == EC_STATE_OPERATIONAL) {
+        if (ecx_statecheck(ctx_, 0, EC_STATE_OPERATIONAL, 0) == EC_STATE_OPERATIONAL) {
             return true;
         }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return false;
 }
