@@ -147,13 +147,26 @@ int main(int argc, char **argv) {
             }
             for (std::size_t i = 0; i < actuators.size(); ++i) {
                 const auto s = actuators[i].snapshot();
+                // s.error_code is only ever captured reactively, on a
+                // CiA-402 statusword FAULT edge -- a slave stuck at the
+                // EtherCAT AL layer (e.g. never leaving SAFE_OP) without
+                // ever reporting a DS402-level FAULT would otherwise never
+                // have its error register checked at all. Read it live,
+                // unconditionally, every print cycle instead.
+                auto live_err = actuators[i].read_error_code_live();
+                char live_err_field[32];
+                if (live_err.has_value()) {
+                    std::snprintf(live_err_field, sizeof(live_err_field), "0x%04X", *live_err);
+                } else {
+                    std::snprintf(live_err_field, sizeof(live_err_field), "READ_FAILED");
+                }
                 std::printf(
                     "[%d] state=%-22s sw=0x%04X cw=0x%04X pos=%9d(%8.2f deg) vel=%9d(%8.2f deg/s) "
-                    "eff=%6d din=0x%08X dout=0x%08X mode_disp=%u err=0x%04X fault=%s\033[K\n",
+                    "eff=%6d din=0x%08X dout=0x%08X mode_disp=%u err=0x%04X fault=%s err_live=%s\033[K\n",
                     target_slaves[i], std::string(cia402::to_string(s.state)).c_str(), s.statusword_raw,
                     s.controlword_raw, s.position_counts, s.position_deg, s.velocity_actual_counts_per_s,
                     s.velocity_deg_per_s, s.effort_actual_raw, s.digital_inputs_raw, s.digital_outputs_raw,
-                    s.mode_of_operation_display, s.error_code, fault_flags(s));
+                    s.mode_of_operation_display, s.error_code, fault_flags(s), live_err_field);
             }
             std::fflush(stdout);
         }

@@ -66,6 +66,15 @@ void configure_zeroerr_pdos(ethercat::SoemMaster &master, int slave_index) {
 ZeroErrActuator::ZeroErrActuator(ethercat::SoemMaster &master, int slave_index)
     : master_(master), slave_index_(slave_index) {}
 
+std::optional<std::uint16_t> ZeroErrActuator::read_error_code_live() const {
+    std::uint16_t value = 0;
+    int wkc = master_.sdo_read(slave_index_, cia402::kErrorCode, 0, &value, sizeof(value));
+    if (wkc <= 0) {
+        return std::nullopt;
+    }
+    return value;
+}
+
 void ZeroErrActuator::set_target_angle_deg(double target_deg) {
     last_commanded_deg_ = target_deg;
     write_field<std::int32_t>(master_, slave_index_, pdo_layout::kTargetPositionOffset, deg_to_counts(target_deg));

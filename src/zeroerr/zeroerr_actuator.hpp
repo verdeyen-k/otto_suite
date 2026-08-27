@@ -59,6 +59,16 @@ public:
     [[nodiscard]] bool is_operational() const { return fsm_.is_operational(); }
     [[nodiscard]] bool has_fault() const { return fsm_.has_fault(); }
 
+    // On-demand SDO read of the Error Code (0x603F), independent of the
+    // CiA-402 statusword FAULT bit -- update()/snapshot() only capture
+    // this reactively, on a fault *statusword* edge, so a slave stuck at
+    // the EtherCAT AL layer (e.g. never leaving SAFE_OP) without ever
+    // reporting a DS402-level FAULT is otherwise invisible here, even if
+    // its error register is non-zero. Mailbox round trip -- call only
+    // when about to display it, not every cycle. Returns std::nullopt if
+    // the SDO read itself failed.
+    [[nodiscard]] std::optional<std::uint16_t> read_error_code_live() const;
+
     // target_deg is an absolute target angle in degrees.
     void set_target_angle_deg(double target_deg);
 
