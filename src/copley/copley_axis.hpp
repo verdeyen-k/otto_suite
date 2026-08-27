@@ -71,6 +71,14 @@ public:
     // failure is silently ignored.
     [[nodiscard]] std::optional<std::uint32_t> read_safety_circuit_status() const;
 
+    // On-demand SDO reads of the Fault Mask (0x2182, is STO even
+    // configured to latch a fault?) and the Latching Fault Status
+    // Register (0x2183, has it latched one?) -- same read-on-demand-only
+    // rule as read_safety_circuit_status applies (mailbox round trip, not
+    // part of the per-cycle PDO exchange).
+    [[nodiscard]] std::optional<std::uint32_t> read_fault_mask() const;
+    [[nodiscard]] std::optional<std::uint32_t> read_latching_fault_status() const;
+
     [[nodiscard]] bool is_operational() const { return fsm_.is_operational(); }
     [[nodiscard]] bool has_fault() const { return fsm_.has_fault(); }
 

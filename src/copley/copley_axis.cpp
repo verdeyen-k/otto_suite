@@ -78,14 +78,28 @@ void CopleyAxis::clear_latching_faults() {
                        &kClearAllLatchingFaults, sizeof(kClearAllLatchingFaults));
 }
 
-std::optional<std::uint32_t> CopleyAxis::read_safety_circuit_status() const {
+namespace {
+std::optional<std::uint32_t> checked_sdo_read_u32(const ethercat::SoemMaster &master, int slave_index,
+                                                   std::uint16_t index) {
     std::uint32_t value = 0;
-    int wkc = master_.sdo_read(slave_index_, kSafetyCircuitStatusIndex + layout_.axis_object_offset, 0, &value,
-                                sizeof(value));
+    int wkc = master.sdo_read(slave_index, index, 0, &value, sizeof(value));
     if (wkc <= 0) {
         return std::nullopt;
     }
     return value;
+}
+}  // namespace
+
+std::optional<std::uint32_t> CopleyAxis::read_safety_circuit_status() const {
+    return checked_sdo_read_u32(master_, slave_index_, kSafetyCircuitStatusIndex + layout_.axis_object_offset);
+}
+
+std::optional<std::uint32_t> CopleyAxis::read_fault_mask() const {
+    return checked_sdo_read_u32(master_, slave_index_, kFaultMaskIndex + layout_.axis_object_offset);
+}
+
+std::optional<std::uint32_t> CopleyAxis::read_latching_fault_status() const {
+    return checked_sdo_read_u32(master_, slave_index_, kLatchingFaultStatusIndex + layout_.axis_object_offset);
 }
 
 void CopleyAxis::update() {

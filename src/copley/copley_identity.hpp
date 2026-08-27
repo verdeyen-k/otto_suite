@@ -81,6 +81,17 @@ constexpr std::uint16_t kCopleyStoErrorCode = 0x5440;
 constexpr std::uint16_t kSafetyCircuitStatusIndex = 0x219D;
 constexpr std::uint32_t kSafetyCircuitInput0Blocking = 1u << 0;
 
+// Fault Mask (0x2182) / Latching Fault Status Register (0x2183) -- same
+// bit layout in both (manual p.68-70): Fault Mask enables/disables
+// whether a given event latches a fault at all; Latching Fault Status
+// shows which latched faults are currently present (cleared by writing a
+// 1 to the bit, or 0xFFFFFFFF for all -- see clear_latching_faults()).
+// Bit 18 = "Safe torque off active" in both. If Fault Mask bit 18 is not
+// set, an STO trip will NOT latch a fault at all -- worth checking before
+// concluding STO isn't reaching this drive's CoE side.
+constexpr std::uint16_t kFaultMaskIndex = 0x2182;
+constexpr std::uint32_t kSafeTorqueOffLatchBit = 1u << 18;
+
 constexpr std::uint16_t axis_object_offset(Axis axis) { return axis == Axis::A ? 0x0000 : 0x0800; }
 
 // Byte offsets within the combined Rx/Tx process image this driver

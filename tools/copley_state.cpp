@@ -160,15 +160,39 @@ int main(int argc, char **argv) {
                     std::snprintf(safety_field, sizeof(safety_field), "safety=0x%08X%s", *safety,
                                   blocking ? " STO_INPUT_BLOCKING" : "");
                 } else {
-                    std::snprintf(safety_field, sizeof(safety_field), "safety=READ_FAILED(unsupported?)");
+                    std::snprintf(safety_field, sizeof(safety_field), "safety=UNSUPPORTED");
                 }
+
+                // Fault Mask (0x2182) governs whether an STO trip latches
+                // a fault at all; Latching Fault Status (0x2183) shows
+                // whether it has (bit 18 = "Safe torque off active" in
+                // both, per the manual). Unlike 0x219D, these apply to
+                // the general Accelnet line, not just "Plus" drives.
+                auto mask = t.handle.read_fault_mask();
+                auto latched = t.handle.read_latching_fault_status();
+                char mask_field[56];
+                if (mask.has_value()) {
+                    std::snprintf(mask_field, sizeof(mask_field), "sto_mask=%s",
+                                  (*mask & copley::kSafeTorqueOffLatchBit) ? "ENABLED" : "DISABLED");
+                } else {
+                    std::snprintf(mask_field, sizeof(mask_field), "sto_mask=READ_FAILED");
+                }
+                char latched_field[56];
+                if (latched.has_value()) {
+                    std::snprintf(latched_field, sizeof(latched_field), "sto_latched=%s",
+                                  (*latched & copley::kSafeTorqueOffLatchBit) ? "YES" : "no");
+                } else {
+                    std::snprintf(latched_field, sizeof(latched_field), "sto_latched=READ_FAILED");
+                }
+
                 std::printf(
                     "[%d/%c] state=%-22s sw=0x%04X cw=0x%04X vel=%8d(cmd=%8d) pos=%10d foll_err=%7d "
-                    "torque=%6d err=0x%04X fault=%s %s\033[K\n",
+                    "torque=%6d err=0x%04X fault=%s %s %s %s\033[K\n",
                     t.slave_index, t.axis == copley::Axis::A ? 'A' : 'B',
                     std::string(cia402::to_string(s.state)).c_str(), s.statusword_raw, s.controlword_raw,
                     s.velocity_actual_counts_per_s, s.commanded_velocity_counts_per_s, s.position_actual_counts,
-                    s.following_error_counts, s.torque_actual_raw, s.error_code, fault_flags(s), safety_field);
+                    s.following_error_counts, s.torque_actual_raw, s.error_code, fault_flags(s), safety_field,
+                    mask_field, latched_field);
             }
             std::fflush(stdout);
         }
