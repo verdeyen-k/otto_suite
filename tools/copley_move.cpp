@@ -265,10 +265,17 @@ int main(int argc, char **argv) {
         axis.set_target_velocity_counts_per_s(command);
         master.send_receive();
 
+        // One line per 5ms cycle would flood the terminal (2000+ lines for
+        // a 10s run) -- overwrite the same line in place instead, same as
+        // zeroerr_state/copley_state do.
         auto s = axis.snapshot();
-        std::printf("  cmd=%8d vel=%8d pos=%10d foll_err=%7d torque=%6d fault=%s\n", command,
+        if (i != 0) {
+            std::printf("\033[1A");
+        }
+        std::printf("  cmd=%8d vel=%8d pos=%10d foll_err=%7d torque=%6d fault=%s\033[K\n", command,
                     s.velocity_actual_counts_per_s, s.position_actual_counts, s.following_error_counts,
                     s.torque_actual_raw, s.has_fault ? (s.sto_active ? "STO_ACTIVE" : "FAULT") : "-");
+        std::fflush(stdout);
         std::this_thread::sleep_for(kCycle);
     }
 

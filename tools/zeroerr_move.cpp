@@ -213,9 +213,16 @@ int main(int argc, char **argv) {
         actuator.set_target_angle_deg(command_deg);
         master.send_receive();
 
+        // One line per 5ms cycle would flood the terminal (2000+ lines for
+        // a 10s run) -- overwrite the same line in place instead, same as
+        // zeroerr_state/copley_state do.
         auto s = actuator.snapshot();
-        std::printf("  cmd=%7.2f pos=%7.2f vel=%7.2f deg/s fault=%s\n", command_deg, s.position_deg,
+        if (i != 0) {
+            std::printf("\033[1A");
+        }
+        std::printf("  cmd=%7.2f pos=%7.2f vel=%7.2f deg/s fault=%s\033[K\n", command_deg, s.position_deg,
                     s.velocity_deg_per_s, s.has_fault ? (s.sto_active ? "STO_ACTIVE" : "FAULT") : "-");
+        std::fflush(stdout);
         std::this_thread::sleep_for(kCycle);
     }
 
