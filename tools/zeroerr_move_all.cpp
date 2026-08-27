@@ -324,19 +324,35 @@ int main(int argc, char **argv) {
     for (std::size_t j = 0; j < actuators.size(); ++j) {
         start_degs[j] = actuators[j].snapshot().position_deg;
     }
-    std::printf("Commanding %zu actuator(s) (ramping over %.2fs, holding %.2fs total)...\n", actuators.size(),
-                args.ramp_s, args.duration_s);
+    std::printf("Commanding %zu actuator(s) (ramping over %.2fs, holding %.2fs total, staggered start)...\n",
+                actuators.size(), args.ramp_s, args.duration_s);
 
-    const int total_cycles = cycles_for(args.duration_s);
+    // Until set_target_angle_deg() is called for the first time, update()
+    // keeps writing the target as whatever the actuator's actual position
+    // currently is -- near-zero effort to "hold". The very first call
+    // permanently switches it onto a fixed commanded target instead, a
+    // real synchronized mode-switch if done for every actuator in the
+    // same cycle. Confirmed on real hardware: doing this simultaneously
+    // for 4 actuators tripped 0x3220 ("bus voltage undervoltage") on all
+    // 4 at once, even though staggering the earlier enable() call alone
+    // was not enough to prevent it. Stagger this transition the same way,
+    // reusing stagger_cycles -- actuator j starts being actively commanded
+    // (and its own ramp clock starts) j*stagger_cycles cycles into this
+    // loop, not all at cycle 0. The loop runs longer to compensate, so
+    // every actuator still gets its full requested ramp_s + duration_s.
+    const int total_cycles =
+        cycles_for(args.duration_s) + static_cast<int>(actuators.size() - 1) * stagger_cycles;
     next_wake = std::chrono::steady_clock::now();
     for (int i = 0; i < total_cycles && !g_stop.load(); ++i) {
-        double elapsed_s = i * kCycleSeconds;
-        double fraction = args.ramp_s > 0.0 ? std::min(1.0, elapsed_s / args.ramp_s) : 1.0;
-
         for (std::size_t j = 0; j < actuators.size(); ++j) {
-            double command_deg = start_degs[j] + (args.targets[j].angle_deg - start_degs[j]) * fraction;
             actuators[j].update();
-            actuators[j].set_target_angle_deg(command_deg);
+            int j_start_cycle = static_cast<int>(j) * stagger_cycles;
+            if (i >= j_start_cycle) {
+                double elapsed_s = (i - j_start_cycle) * kCycleSeconds;
+                double fraction = args.ramp_s > 0.0 ? std::min(1.0, elapsed_s / args.ramp_s) : 1.0;
+                double command_deg = start_degs[j] + (args.targets[j].angle_deg - start_degs[j]) * fraction;
+                actuators[j].set_target_angle_deg(command_deg);
+            }
         }
         master.send_receive();
 
