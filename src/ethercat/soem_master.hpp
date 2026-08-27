@@ -4,6 +4,7 @@
 // for a single ZeroErr eRob axis today, not a general framework yet.
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -85,6 +86,17 @@ public:
     // never advances and the AL status code stays 0x0000 throughout. A
     // register write being accepted is not the same as the firmware
     // deciding to act on it.
+    //
+    // Also records dc_sync0_cycle_ns as this master's own cyclic pacing
+    // period, used by wait_for_safe_op()/request_operational_state()'s
+    // bring-up loops (see their doc comments) -- these previously paced
+    // themselves at a hardcoded 1ms regardless of what cycle time was
+    // actually told to the slaves here, meaning bring-up sent real cyclic
+    // frames at a DIFFERENT rate than the SYNC0 period the slaves were
+    // just configured to expect, only settling to the correct rate once a
+    // tool's own post-OPERATIONAL loop took over. A slave's DC/SYNC0
+    // lock-on may not appreciate warming up at one cadence and then being
+    // switched to another.
     void configure_pdos(std::uint32_t dc_sync0_cycle_ns = 5'000'000);
 
     // Polls until the bus reaches at least SAFE_OP, or times out.
@@ -95,11 +107,14 @@ public:
     // handing ecx_statecheck a real timeout -- otherwise this entire wait
     // sends zero real cyclic frames, and a DC-capable slave's clock (and
     // its SYNC0 pulse, started in configure_pdos()) gets nothing to lock
-    // onto until well after this returns. Passive/diagnostic tools that
-    // never need outputs applied (e.g. zeroerr_state) should check this
-    // instead of request_operational_state(), so a bus that's stuck below
-    // OP for some other reason (a fault, a watchdog issue) still yields
-    // valid, explainable state instead of a bare abort.
+    // onto until well after this returns. Paced at cycle_period_ (set by
+    // configure_pdos(), matching the SYNC0 rate the slaves were actually
+    // configured to expect), not a hardcoded step unrelated to it.
+    // Passive/diagnostic tools that never need outputs applied (e.g.
+    // zeroerr_state) should check this instead of
+    // request_operational_state(), so a bus that's stuck below OP for
+    // some other reason (a fault, a watchdog issue) still yields valid,
+    // explainable state instead of a bare abort.
     bool wait_for_safe_op(int timeout_us = 6'000'000);
 
     // Requests OPERATIONAL state and drives the transition through --
@@ -120,28 +135,28 @@ public:
     // indefinitely despite every slave being otherwise healthy.
     //
     // The retry loop deliberately keeps sending a process-data cycle
-    // every ~1ms throughout (statecheck is sampled with a near-zero
-    // timeout, not handed a real one) -- ecx_statecheck's own internal
-    // wait only re-reads the AL status register, it does NOT send
-    // process data, so giving it a real timeout here reintroduces a gap
-    // between cyclic frames. Confirmed on real hardware this gap alone
-    // (previously up to 50ms per retry) can trip a slave's sync manager
-    // watchdog -- AL state SAFE_OP+ERROR, status "Sync manager
+    // every cycle_period_ throughout (statecheck is sampled with a
+    // near-zero timeout, not handed a real one) -- ecx_statecheck's own
+    // internal wait only re-reads the AL status register, it does NOT
+    // send process data, so giving it a real timeout here reintroduces a
+    // gap between cyclic frames. Confirmed on real hardware this gap
+    // alone (previously up to 50ms per retry) can trip a slave's sync
+    // manager watchdog -- AL state SAFE_OP+ERROR, status "Sync manager
     // watchdog" -- on a different slave each run, which looked like
-    // random flakiness until traced to this. retries=3000 at ~1ms each
-    // gives a generous ~3s worst-case budget; success is typically near-
-    // instant once frames stop having gaps. If this still fails,
-    // read_all_slave_states() on failure is what tells you why.
-    // dc_settle_us default bumped from 1s to 3s -- with 4 DC-enabled
-    // eRobs, 2 dual-axis Copleys, and 3 DC-enabled splitters all needing
-    // their clocks to converge on one bus, 1s (copied from SOEM's own
-    // ec_sample.c, which guesses at the same number for its own simpler
-    // topologies) may just not be enough here. Experimental: confirmed on
-    // real hardware that a *different* subset of slaves (clean working
-    // counter, no AL error) intermittently fails to reach OPERATIONAL on
-    // this specific 9-slave topology; untested whether more settle time
-    // actually reduces that failure rate.
-    bool request_operational_state(int retries = 3000, int dc_settle_us = 3'000'000);
+    // random flakiness until traced to this. retries=3000 gives a
+    // generous worst-case budget (3s at a 1ms cycle_period_, 15s at 5ms --
+    // scales with whatever configure_pdos() was told); success is
+    // typically near-instant once frames stop having gaps. If this still
+    // fails, read_all_slave_states() on failure is what tells you why.
+    //
+    // dc_settle_us default bumped from SOEM's own ec_sample.c's 1s guess,
+    // first to 3s (4 DC-enabled eRobs + 2 dual-axis Copleys + 3 DC
+    // splitters all converging on one bus may need more than a simpler
+    // topology), now to 10s per external guidance on ZeroErr drives
+    // specifically needing an extended warm-up for their drift filter to
+    // converge -- still experimental, and worth revisiting since this
+    // number was never derived from a ZeroErr spec, only tuning.
+    bool request_operational_state(int retries = 3000, int dc_settle_us = 10'000'000);
 
     // Exchanges one cycle of process data. Returns the working counter;
     // callers should compare against expected_wkc() to detect a
@@ -185,6 +200,11 @@ private:
     ecx_context *ctx_ = nullptr;
     bool closed_ = false;
     int slave_count_ = 0;
+    // Set by configure_pdos() from dc_sync0_cycle_ns -- the pacing the
+    // bring-up loops (wait_for_safe_op(), request_operational_state())
+    // use, so they run at the same rate the slaves were actually told to
+    // expect via SYNC0, not an unrelated hardcoded step.
+    std::chrono::nanoseconds cycle_period_{std::chrono::milliseconds(5)};
     std::vector<std::uint8_t> io_map_;
     std::unordered_map<int, std::function<void(SoemMaster &, int)>> config_funcs_;
 };

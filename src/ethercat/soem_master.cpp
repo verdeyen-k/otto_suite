@@ -85,6 +85,11 @@ void SoemMaster::set_config_func(int slave_index, std::function<void(SoemMaster 
 }
 
 void SoemMaster::configure_pdos(std::uint32_t dc_sync0_cycle_ns) {
+    // The bring-up loops below pace themselves at this same rate -- see
+    // their comments on why warming up at a different cadence than the
+    // SYNC0 period the slaves are about to be told to expect is itself a
+    // real inconsistency, independent of jitter/precision.
+    cycle_period_ = std::chrono::nanoseconds(dc_sync0_cycle_ns);
     ecx_config_map_group(ctx_, io_map_.data(), 0);
     ecx_configdc(ctx_);
     // ecx_configdc() alone does not start SYNC0 pulse generation -- see
@@ -122,19 +127,24 @@ bool SoemMaster::wait_for_safe_op(int timeout_us) {
     // configure_pdos(), not only once SAFE_OP is already confirmed.
     //
     // sleep_until an absolute, precomputed wake time rather than
-    // sleep_for(1ms) after each iteration's work: a relative sleep means
-    // the actual cycle period is 1ms *plus* however long send_receive()/
-    // ecx_statecheck() took that iteration, which varies and compounds
-    // over the loop -- a real timing-precision bug in this loop itself,
-    // independent of and not fixed by OS scheduling priority/affinity.
-    const int retries = std::max(1, timeout_us / 1000);
+    // sleep_for(cycle_period_) after each iteration's work: a relative
+    // sleep means the actual cycle period is cycle_period_ *plus*
+    // however long send_receive()/ecx_statecheck() took that iteration,
+    // which varies and compounds over the loop -- a real timing-precision
+    // bug in this loop itself, independent of and not fixed by OS
+    // scheduling priority/affinity. Paced at cycle_period_ (set by
+    // configure_pdos()), not a hardcoded step, so bring-up runs at the
+    // same rate the slaves were actually told to expect via SYNC0.
+    const auto cycle_us = std::chrono::duration_cast<std::chrono::microseconds>(cycle_period_).count();
+    const int retries =
+        static_cast<int>(std::max<std::int64_t>(1, timeout_us / std::max<std::int64_t>(1, cycle_us)));
     auto next_wake = std::chrono::steady_clock::now();
     for (int i = 0; i < retries; ++i) {
         send_receive();
         if (ecx_statecheck(ctx_, 0, EC_STATE_SAFE_OP, 0) == EC_STATE_SAFE_OP) {
             return true;
         }
-        next_wake += std::chrono::milliseconds(1);
+        next_wake += cycle_period_;
         std::this_thread::sleep_until(next_wake);
     }
     return false;
@@ -143,13 +153,14 @@ bool SoemMaster::wait_for_safe_op(int timeout_us) {
 bool SoemMaster::request_operational_state(int retries, int dc_settle_us) {
     if (dc_settle_us > 0) {
         // Absolute-time scheduling here too -- see wait_for_safe_op()'s
-        // comment on why a relative sleep_for(1ms) after variable-length
-        // work is itself a source of cycle-to-cycle jitter.
+        // comment on why a relative sleep_for after variable-length work
+        // is itself a source of cycle-to-cycle jitter. Paced at
+        // cycle_period_, not a hardcoded step, for the same reason.
         auto next_wake = std::chrono::steady_clock::now();
         auto settle_until = next_wake + std::chrono::microseconds(dc_settle_us);
         while (next_wake < settle_until) {
             send_receive();
-            next_wake += std::chrono::milliseconds(1);
+            next_wake += cycle_period_;
             std::this_thread::sleep_until(next_wake);
         }
     }
@@ -177,11 +188,14 @@ bool SoemMaster::request_operational_state(int retries, int dc_settle_us) {
     // config/hardware issue, exactly what a dropped one-shot state-request
     // frame would produce. Re-issuing it periodically (not just once)
     // gives a dropped request another chance.
-    constexpr int kResendEveryNRetries = 50;  // ~50ms at the loop's 1ms pace
+    // ~50ms between resends, expressed in cycles of whatever
+    // cycle_period_ actually is rather than an assumed 1ms step.
+    const int kResendEveryNRetries =
+        std::max(1, static_cast<int>(std::chrono::milliseconds(50) / cycle_period_));
     // Absolute-time scheduling here too -- see the comment in
-    // wait_for_safe_op() on why sleep_for(1ms) after variable-length work
-    // is itself a source of cycle-to-cycle jitter, independent of OS
-    // scheduling.
+    // wait_for_safe_op() on why a relative sleep after variable-length
+    // work is itself a source of cycle-to-cycle jitter, independent of OS
+    // scheduling. Paced at cycle_period_, not a hardcoded step.
     auto next_wake = std::chrono::steady_clock::now();
     for (int i = 0; i < retries; ++i) {
         if (i % kResendEveryNRetries == 0) {
@@ -226,7 +240,7 @@ bool SoemMaster::request_operational_state(int retries, int dc_settle_us) {
         if (ecx_statecheck(ctx_, 0, EC_STATE_OPERATIONAL, 0) == EC_STATE_OPERATIONAL) {
             return true;
         }
-        next_wake += std::chrono::milliseconds(1);
+        next_wake += cycle_period_;
         std::this_thread::sleep_until(next_wake);
     }
     return false;
