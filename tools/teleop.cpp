@@ -32,7 +32,7 @@
 //     --rl steer=8,drive=3,axis=a --rr steer=9,drive=3,axis=b \
 //     [--command-port 5555] [--telemetry-port 5556] \
 //     [--max-speed-mps 0.15] [--max-omega-deg-s 30] \
-//     [--max-steer-rate-deg-s 180] [--max-accel-mps2 0.3] \
+//     [--max-steer-rate-deg-s 180] [--max-steer-accel-deg-s2 600] [--max-accel-mps2 0.3] \
 //     [--hold-ms 150] [--disable-ms 1000] [--stagger-ms 100]
 //
 // Then, from any machine that can reach this one:
@@ -87,6 +87,10 @@ struct Args {
     double max_speed_mps = 0.15;
     double max_omega_deg_s = 30.0;
     double max_steer_rate_deg_s = 180.0;
+    // eRob manual Table 12-1: "Recommended Acc./Dec. Time >= 0.3s" to reach
+    // max angular velocity -- 600 deg/s^2 matches reaching the default
+    // 180 deg/s rate over that same 0.3s, rather than a velocity step.
+    double max_steer_accel_deg_s2 = 600.0;
     double max_accel_mps2 = 0.3;
     double hold_ms = 150.0;
     double disable_ms = 1000.0;
@@ -98,7 +102,7 @@ struct Args {
                  "Usage: %s --iface IFNAME --fl steer=N,drive=M,axis={a|b} --fr ... --rl ... --rr ...\n"
                  "         [--command-port 5555] [--telemetry-port 5556]\n"
                  "         [--max-speed-mps 0.15] [--max-omega-deg-s 30]\n"
-                 "         [--max-steer-rate-deg-s 180] [--max-accel-mps2 0.3]\n"
+                 "         [--max-steer-rate-deg-s 180] [--max-steer-accel-deg-s2 600] [--max-accel-mps2 0.3]\n"
                  "         [--hold-ms 150] [--disable-ms 1000] [--stagger-ms 100]\n"
                  "  All four of --fl/--fr/--rl/--rr are required.\n",
                  prog);
@@ -173,6 +177,8 @@ Args parse_args(int argc, char **argv) {
             args.max_omega_deg_s = std::atof(next().c_str());
         } else if (arg == "--max-steer-rate-deg-s") {
             args.max_steer_rate_deg_s = std::atof(next().c_str());
+        } else if (arg == "--max-steer-accel-deg-s2") {
+            args.max_steer_accel_deg_s2 = std::atof(next().c_str());
         } else if (arg == "--max-accel-mps2") {
             args.max_accel_mps2 = std::atof(next().c_str());
         } else if (arg == "--hold-ms") {
@@ -229,6 +235,7 @@ int main(int argc, char **argv) {
 
     const double max_omega_rad_s = args.max_omega_deg_s * M_PI / 180.0;
     const double max_steer_rate_rad_s = args.max_steer_rate_deg_s * M_PI / 180.0;
+    const double max_steer_accel_rad_s2 = args.max_steer_accel_deg_s2 * M_PI / 180.0;
 
     ethercat::SoemMaster master(args.iface);
     int slave_count;
@@ -434,7 +441,20 @@ int main(int argc, char **argv) {
     // during a stale link) can ever be an instant step. Angle is kept as
     // an unwrapped accumulator (not normalized to [-pi,pi]) since the
     // actuator's absolute position target has no reason to wrap.
+    //
+    // last_commanded_angular_velocity_rad_s is the extra state that makes
+    // steering a real acceleration-limited (not just velocity-clamped)
+    // profile -- confirmed necessary on real hardware: a velocity clamp
+    // alone lets the commanded angle's rate of change jump from 0 to the
+    // max rate in a single cycle (an implied velocity STEP), which is
+    // exactly what tripped 0x8400 "Velocity Error Exceeds the Limit Value"
+    // per the eRob manual (Table 12-1 specifies a Recommended Acc./Dec.
+    // Time >= 0.3s to reach max angular velocity, not an instant onset).
+    // The drive axis doesn't need the same treatment: it's CSV (velocity
+    // mode), so max_accel_mps2 already limits the actual commanded
+    // velocity directly, not a value merely implied by position deltas.
     std::array<double, 4> last_commanded_angle_rad{};
+    std::array<double, 4> last_commanded_angular_velocity_rad_s{0.0, 0.0, 0.0, 0.0};
     std::array<double, 4> last_commanded_speed_mps{0.0, 0.0, 0.0, 0.0};
     for (std::size_t j = 0; j < 4; ++j) {
         last_commanded_angle_rad[j] = steer_actuators[j].snapshot().position_deg * M_PI / 180.0;
@@ -536,8 +556,17 @@ int main(int argc, char **argv) {
         // speed to zero and hold its current heading -- not swing back to
         // face forward, which would be unrequested motion during what's
         // supposed to be a controlled stop.
-        const bool target_nonzero =
-            std::hypot(target.vx_mps, target.vy_mps) > 1e-4 || std::abs(target.omega_rad_per_s) > 1e-4;
+        //
+        // Threshold is deliberately well above float noise: a real
+        // joystick's deadzone rescaling can still leak small values (e.g.
+        // ~0.003-0.004 m/s) right at its edge even at rest -- confirmed in
+        // the field, where that leakage was repeatedly re-arming (and so
+        // effectively defeating) the stagger below well before the actual
+        // commanded motion arrived. 1% of max_speed_mps/max_omega_rad_s
+        // comfortably clears deadzone-edge leakage while still catching any
+        // deliberate stick movement.
+        const bool target_nonzero = std::hypot(target.vx_mps, target.vy_mps) > 0.01 * args.max_speed_mps ||
+                                     std::abs(target.omega_rad_per_s) > 0.01 * max_omega_rad_s;
         if (target_nonzero && !prev_target_nonzero) {
             wake_cycle = cycle;
         }
@@ -560,14 +589,25 @@ int main(int argc, char **argv) {
                 optimized = kinematics::SwerveKinematics::optimize(desired[j], last_commanded_angle_rad[j]);
             }
 
-            if (steer_gate) {
-                const double max_angle_step = max_steer_rate_rad_s * kCycleSeconds;
-                const double angle_delta =
-                    std::remainder(optimized.angle_rad - last_commanded_angle_rad[j], 2.0 * M_PI);
-                last_commanded_angle_rad[j] += clamp_magnitude(angle_delta, max_angle_step);
-            }
-            // else: angle left untouched (frozen) -- either fully at rest,
-            // or this module's steer stagger slot hasn't opened yet.
+            // Target angular velocity is whatever's needed to close the
+            // remaining angle gap within one cycle, capped at the max
+            // rate -- but that target is then itself acceleration-limited
+            // below, never applied directly to position. Not steer_gate
+            // (at rest, or this module's stagger slot hasn't opened yet)
+            // means target velocity 0, so the module decelerates smoothly
+            // to a stop and holds heading, rather than freezing instantly.
+            const double target_angular_velocity_rad_s =
+                steer_gate ? clamp_magnitude(
+                                 std::remainder(optimized.angle_rad - last_commanded_angle_rad[j], 2.0 * M_PI) /
+                                     kCycleSeconds,
+                                 max_steer_rate_rad_s)
+                           : 0.0;
+            const double max_angular_accel_step = max_steer_accel_rad_s2 * kCycleSeconds;
+            const double angular_velocity_delta =
+                target_angular_velocity_rad_s - last_commanded_angular_velocity_rad_s[j];
+            last_commanded_angular_velocity_rad_s[j] +=
+                clamp_magnitude(angular_velocity_delta, max_angular_accel_step);
+            last_commanded_angle_rad[j] += last_commanded_angular_velocity_rad_s[j] * kCycleSeconds;
 
             const double target_speed_mps = drive_gate ? optimized.speed_mps : 0.0;
             const double max_speed_step = args.max_accel_mps2 * kCycleSeconds;
