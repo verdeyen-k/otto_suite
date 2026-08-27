@@ -148,32 +148,69 @@ int main(int argc, char **argv) {
 
     zeroerr::ZeroErrActuator actuator(master, slave_index);
 
-    // One cycle of exchange so update() has a real statusword before we
-    // decide whether a fault reset is needed.
-    actuator.update();
-    master.send_receive();
-
-    if (actuator.has_fault()) {
+    // Checks for a fault and, if present, re-arms the standard controlword
+    // Reset Fault pulse periodically (fault_reset() only sends a single
+    // rising-edge pulse -- if that one doesn't land, or the fault
+    // re-triggers right as it's processed, nothing resends it otherwise)
+    // for up to 1s. `context` names where in the sequence this is
+    // happening, for the printed message. Returns true if no fault was
+    // present or it cleared, false if it was present and never did.
+    auto try_clear_fault = [&](const char *context) -> bool {
+        if (!actuator.has_fault()) {
+            return true;
+        }
         auto s = actuator.snapshot();
-        std::printf("Pre-existing fault (error_code=0x%04X%s). Resetting (at SAFE_OP)...\n", s.error_code,
+        std::printf("Fault detected (%s, error_code=0x%04X%s). Resetting...\n", context, s.error_code,
                     s.sto_active ? ", STO_ACTIVE" : "");
         actuator.fault_reset();
+        constexpr int kRearmEveryNCycles = 40;  // ~200ms at the 5ms cycle
         auto next_wake = std::chrono::steady_clock::now();
         for (int i = 0; i < cycles_for(1.0) && !g_stop.load(); ++i) {
+            if (i % kRearmEveryNCycles == 0 && actuator.has_fault()) {
+                actuator.fault_reset();
+            }
             actuator.update();
             master.send_receive();
             next_wake += kCycle;
             std::this_thread::sleep_until(next_wake);
         }
-        if (actuator.has_fault()) {
-            std::fprintf(stderr, "error: fault did not clear -- aborting\n");
-            return 1;
-        }
+        return !actuator.has_fault();
+    };
+
+    // One cycle of exchange so update() has a real statusword before we
+    // decide whether a fault reset is needed.
+    actuator.update();
+    master.send_receive();
+
+    // Deliberately NOT aborting if this fails: AL state (SAFE_OP/
+    // OPERATIONAL) and the CiA-402 application fault are separate layers
+    // -- confirmed on real hardware that a ZeroErr eRob's 0xA000 ("master
+    // offline") fault does not clear while still at SAFE_OP no matter how
+    // many times fault_reset() is re-armed, plausibly because its
+    // firmware only considers the master genuinely "online" once real
+    // OPERATIONAL cyclic exchange is actually happening -- a
+    // chicken-and-egg case if this checkpoint required clearing it first.
+    // Try requesting OPERATIONAL anyway; the second checkpoint below,
+    // once actually at OPERATIONAL, is the one that must succeed.
+    if (!try_clear_fault("at SAFE_OP")) {
+        std::fprintf(stderr, "warning: fault did not clear at SAFE_OP -- trying to reach OPERATIONAL anyway\n");
     }
 
     if (!master.request_operational_state()) {
         std::fprintf(stderr, "error: bus did not reach OPERATIONAL state -- aborting\n");
         print_unhealthy_slaves(master);
+        return 1;
+    }
+
+    // Second check right at OPERATIONAL, before any enable command -- a
+    // fault arising from the OPERATIONAL transition itself (as opposed to
+    // anything commanded afterward) would otherwise be invisible until the
+    // enable loop's first iteration. See copley_move.cpp for the same
+    // reasoning.
+    actuator.update();
+    master.send_receive();
+    if (!try_clear_fault("at OPERATIONAL, before any enable command")) {
+        std::fprintf(stderr, "error: fault did not clear -- aborting\n");
         return 1;
     }
 

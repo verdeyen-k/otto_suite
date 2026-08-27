@@ -222,8 +222,18 @@ int main(int argc, char **argv) {
     }
     master.send_receive();
 
+    // Deliberately NOT aborting if this fails: AL state (SAFE_OP/
+    // OPERATIONAL) and the CiA-402 application fault are separate layers
+    // -- confirmed on real hardware that a ZeroErr eRob's 0xA000 ("master
+    // offline") fault does not clear while still at SAFE_OP no matter how
+    // many times fault_reset() is re-armed, plausibly because its
+    // firmware only considers the master genuinely "online" once real
+    // OPERATIONAL cyclic exchange is actually happening -- a
+    // chicken-and-egg case if this checkpoint required clearing it first.
+    // Try requesting OPERATIONAL anyway; the second checkpoint below,
+    // once actually at OPERATIONAL, is the one that must succeed.
     if (!try_clear_faults(actuators, args.targets, master, "at SAFE_OP")) {
-        return 1;
+        std::fprintf(stderr, "warning: fault did not clear at SAFE_OP -- trying to reach OPERATIONAL anyway\n");
     }
 
     if (!master.request_operational_state()) {
