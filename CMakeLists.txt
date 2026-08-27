@@ -70,3 +70,12 @@ target_link_libraries(kinematics_check PRIVATE kinematics)
 
 add_executable(swerve_kinematics_test tools/swerve_kinematics_test.cpp)
 target_link_libraries(swerve_kinematics_test PRIVATE zeroerr copley kinematics)
+
+add_library(bridge
+  src/bridge/chassis_link.cpp
+)
+target_include_directories(bridge PUBLIC src)
+target_link_libraries(bridge PUBLIC kinematics zmq)
+
+add_executable(chassis_link_check tools/chassis_link_check.cpp)
+target_link_libraries(chassis_link_check PRIVATE bridge zmq)
