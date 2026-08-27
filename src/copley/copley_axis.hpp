@@ -21,6 +21,12 @@ struct StateSnapshot {
     std::uint16_t error_code;  // 0 if no fault, else last-captured DS402 Error Code (0x603F)
     bool has_fault;
     bool sto_active;
+    // True if has_fault but the 0x603F SDO read on the fault edge failed
+    // (mailbox abort/timeout) -- error_code is then NOT "no error", it's
+    // simply unknown. Distinguishing this matters: a plain 0x0000 next to
+    // has_fault=true is otherwise indistinguishable from a genuine (if
+    // unusual) faulted-with-no-error-code state.
+    bool error_code_read_failed;
 };
 
 // Registers the Copley BE2's config_func on `master` for `slave_index`:
@@ -110,6 +116,7 @@ private:
     std::int32_t last_following_error_counts_ = 0;
     std::int16_t last_torque_actual_raw_ = 0;
     std::uint16_t last_error_code_ = 0;
+    bool last_error_code_read_failed_ = false;
 };
 
 }  // namespace copley

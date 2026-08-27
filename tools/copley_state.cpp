@@ -64,6 +64,7 @@ Args parse_args(int argc, char **argv) {
 
 const char *fault_flags(const copley::StateSnapshot &s) {
     if (!s.has_fault) return "-";
+    if (s.error_code_read_failed) return "FAULT(err read FAILED)";
     if (s.sto_active) return "STO_ACTIVE";
     return "FAULT";
 }

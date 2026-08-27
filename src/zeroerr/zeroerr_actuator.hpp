@@ -23,6 +23,10 @@ struct StateSnapshot {
     std::uint16_t error_code;  // 0 if no fault, else last-captured DS402 Error Code (0x603F)
     bool has_fault;
     bool sto_active;
+    // True if has_fault but the 0x603F SDO read on the fault edge failed
+    // (mailbox abort/timeout) -- error_code is then unknown, not "no
+    // error". See the identical field/rationale on copley::StateSnapshot.
+    bool error_code_read_failed;
 };
 
 double counts_to_deg(std::int32_t counts);
@@ -81,6 +85,7 @@ private:
     std::int16_t last_effort_raw_ = 0;
     std::uint16_t last_mode_of_operation_display_ = 0;
     std::uint16_t last_error_code_ = 0;
+    bool last_error_code_read_failed_ = false;
 };
 
 }  // namespace zeroerr

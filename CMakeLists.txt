@@ -9,7 +9,11 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()
 
-set(SOEM_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+# ON so SOEM's own bundled slaveinfo tool gets built -- exactly the
+# whole-bus EtherCAT AL-state/status-code diagnostic plan.md points to
+# ("don't need to rebuild"), useful right now for seeing why the bus
+# won't reach OPERATIONAL independent of any one axis's own CiA-402 state.
+set(SOEM_BUILD_SAMPLES ON CACHE BOOL "" FORCE)
 add_subdirectory(third_party/SOEM)
 
 add_library(cia402

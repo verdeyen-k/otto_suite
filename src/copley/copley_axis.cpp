@@ -109,10 +109,15 @@ void CopleyAxis::update() {
 
     if (fsm_.has_fault() && !was_faulted) {
         // SDO/mailbox read -- only on the fault edge, not every cycle.
-        master_.sdo_read(slave_index_, cia402::kErrorCode + layout_.axis_object_offset, 0, &last_error_code_,
-                          sizeof(last_error_code_));
+        int wkc = master_.sdo_read(slave_index_, cia402::kErrorCode + layout_.axis_object_offset, 0,
+                                    &last_error_code_, sizeof(last_error_code_));
+        last_error_code_read_failed_ = wkc <= 0;
+        if (last_error_code_read_failed_) {
+            last_error_code_ = 0;  // don't leave a stale value from a previous fault
+        }
     } else if (!fsm_.has_fault()) {
         last_error_code_ = 0;
+        last_error_code_read_failed_ = false;
     }
 
     last_controlword_ = fsm_.next_controlword_bits();
@@ -145,6 +150,7 @@ StateSnapshot CopleyAxis::snapshot() const {
     s.error_code = last_error_code_;
     s.has_fault = fsm_.has_fault();
     s.sto_active = last_error_code_ == kCopleyStoErrorCode;
+    s.error_code_read_failed = last_error_code_read_failed_;
     return s;
 }
 
