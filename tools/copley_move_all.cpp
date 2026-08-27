@@ -46,14 +46,22 @@ struct Args {
     std::vector<TargetSpec> targets;
     double duration_s = 5.0;
     double ramp_s = -1.0;  // -1 means min(1.0, duration_s / 2)
+    // Enabling several axes in the same cycle means each one's startup
+    // current inrush hits the shared power rail at once -- confirmed on
+    // real hardware with ZeroErr eRobs (0x3220 "bus voltage undervoltage"
+    // tripping on all 4 simultaneously). Staggering each axis's enable()
+    // call spreads that inrush out over time instead.
+    double stagger_ms = 100.0;
 };
 
 [[noreturn]] void usage_and_exit(const char *prog) {
     std::fprintf(stderr,
                  "Usage: %s --iface IFNAME --target slave=N,axis={a|b},velocity=COUNTS_PER_S "
-                 "[--target ...] [--duration-s S] [--ramp-s S]\n"
+                 "[--target ...] [--duration-s S] [--ramp-s S] [--stagger-ms MS]\n"
                  "  --target is repeatable; at least one is required.\n"
-                 "  Velocity is raw encoder counts/s -- no RPM/m/s conversion is claimed.\n",
+                 "  Velocity is raw encoder counts/s -- no RPM/m/s conversion is claimed.\n"
+                 "  --stagger-ms (default 100) delays each axis's enable by this much from\n"
+                 "  the previous one, to spread out simultaneous startup current draw.\n",
                  prog);
     std::exit(2);
 }
@@ -112,6 +120,8 @@ Args parse_args(int argc, char **argv) {
             args.duration_s = std::atof(next().c_str());
         } else if (arg == "--ramp-s") {
             args.ramp_s = std::atof(next().c_str());
+        } else if (arg == "--stagger-ms") {
+            args.stagger_ms = std::atof(next().c_str());
         } else {
             usage_and_exit(argv[0]);
         }
@@ -260,10 +270,9 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    for (auto &a : axes) {
-        a.enable();
-    }
-    std::printf("Enabling %zu axis/axes...\n", axes.size());
+    std::printf("Enabling %zu axis/axes, staggered %.0fms apart...\n", axes.size(), args.stagger_ms);
+    const int stagger_cycles = std::max(0, static_cast<int>(args.stagger_ms / 1000.0 / kCycleSeconds));
+    std::size_t next_to_enable = 0;
     std::vector<cia402::DriveState> last_states(axes.size());
     for (std::size_t i = 0; i < axes.size(); ++i) {
         last_states[i] = axes[i].snapshot().state;
@@ -271,6 +280,14 @@ int main(int argc, char **argv) {
     bool all_operational = false;
     auto next_wake = std::chrono::steady_clock::now();
     for (int i = 0; i < cycles_for(5.0) && !g_stop.load(); ++i) {
+        // Enable one more axis once its turn comes up, rather than all at
+        // once -- see the stagger_ms doc comment on Args.
+        if (next_to_enable < axes.size() && i >= static_cast<int>(next_to_enable) * stagger_cycles) {
+            std::printf("  [%d/%s] enabling\n", args.targets[next_to_enable].slave_index,
+                        axis_name(args.targets[next_to_enable].axis));
+            axes[next_to_enable].enable();
+            ++next_to_enable;
+        }
         for (auto &a : axes) {
             a.update();
         }
@@ -283,7 +300,7 @@ int main(int argc, char **argv) {
                             std::string(cia402::to_string(state)).c_str());
                 last_states[j] = state;
             }
-            if (!axes[j].is_operational()) {
+            if (j >= next_to_enable || !axes[j].is_operational()) {
                 all_ok = false;
             }
         }

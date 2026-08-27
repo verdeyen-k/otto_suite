@@ -43,14 +43,23 @@ struct Args {
     std::vector<TargetSpec> targets;
     double duration_s = 5.0;
     double ramp_s = -1.0;  // -1 means min(1.0, duration_s / 2)
+    // Enabling several actuators in the same cycle means each one's
+    // startup current inrush hits the shared power rail at once --
+    // confirmed on real hardware: enabling 4 eRobs together tripped
+    // 0x3220 ("bus voltage undervoltage", manual p.120) on all 4
+    // simultaneously. Staggering each actuator's enable() call spreads
+    // that inrush out over time instead.
+    double stagger_ms = 100.0;
 };
 
 [[noreturn]] void usage_and_exit(const char *prog) {
     std::fprintf(stderr,
                  "Usage: %s --iface IFNAME --target slave=N,angle=DEG [--target ...] "
-                 "[--duration-s S] [--ramp-s S]\n"
+                 "[--duration-s S] [--ramp-s S] [--stagger-ms MS]\n"
                  "  --target is repeatable; at least one is required.\n"
-                 "  angle is the ABSOLUTE target angle for that actuator (not a delta).\n",
+                 "  angle is the ABSOLUTE target angle for that actuator (not a delta).\n"
+                 "  --stagger-ms (default 100) delays each actuator's enable by this much\n"
+                 "  from the previous one, to spread out simultaneous startup current draw.\n",
                  prog);
     std::exit(2);
 }
@@ -97,6 +106,8 @@ Args parse_args(int argc, char **argv) {
             args.duration_s = std::atof(next().c_str());
         } else if (arg == "--ramp-s") {
             args.ramp_s = std::atof(next().c_str());
+        } else if (arg == "--stagger-ms") {
+            args.stagger_ms = std::atof(next().c_str());
         } else {
             usage_and_exit(argv[0]);
         }
@@ -253,10 +264,9 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    for (auto &a : actuators) {
-        a.enable();
-    }
-    std::printf("Enabling %zu actuator(s)...\n", actuators.size());
+    std::printf("Enabling %zu actuator(s), staggered %.0fms apart...\n", actuators.size(), args.stagger_ms);
+    const int stagger_cycles = std::max(0, static_cast<int>(args.stagger_ms / 1000.0 / kCycleSeconds));
+    std::size_t next_to_enable = 0;
     std::vector<cia402::DriveState> last_states(actuators.size());
     for (std::size_t i = 0; i < actuators.size(); ++i) {
         last_states[i] = actuators[i].snapshot().state;
@@ -264,6 +274,18 @@ int main(int argc, char **argv) {
     bool all_operational = false;
     auto next_wake = std::chrono::steady_clock::now();
     for (int i = 0; i < cycles_for(5.0) && !g_stop.load(); ++i) {
+        // Enable one more actuator once its turn comes up, rather than all
+        // at once -- each one's startup current inrush hits the shared
+        // power rail as it transitions to OPERATION_ENABLED, and doing
+        // that for several actuators in the same cycle can sag the bus
+        // voltage enough to trip 0x3220 ("bus voltage undervoltage",
+        // manual p.120) on all of them at once. Confirmed on real
+        // hardware enabling 4 eRobs together.
+        if (next_to_enable < actuators.size() && i >= static_cast<int>(next_to_enable) * stagger_cycles) {
+            std::printf("  [%d] enabling\n", args.targets[next_to_enable].slave_index);
+            actuators[next_to_enable].enable();
+            ++next_to_enable;
+        }
         for (auto &a : actuators) {
             a.update();
         }
@@ -276,7 +298,7 @@ int main(int argc, char **argv) {
                             std::string(cia402::to_string(state)).c_str());
                 last_states[j] = state;
             }
-            if (!actuators[j].is_operational()) {
+            if (j >= next_to_enable || !actuators[j].is_operational()) {
                 all_ok = false;
             }
         }
