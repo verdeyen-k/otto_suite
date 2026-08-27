@@ -101,7 +101,17 @@ public:
     // which sleeps a full second here for exactly this reason -- skipping
     // it is a real, confirmed-on-hardware way to get stuck at SAFE_OP
     // indefinitely despite every slave being otherwise healthy.
-    bool request_operational_state(int retries = 40, int timeout_us = 50000, int dc_settle_us = 1'000'000);
+    //
+    // Default retry budget is generous (~10s worst case) rather than
+    // tight: confirmed on a real 9-slave bus that the straggler holding
+    // the whole group below OP varies run to run (a different eRob each
+    // time, always AL state=SAFE_OP with status "No error" -- not a
+    // fault, just not there yet), and simply retrying the same run again
+    // reliably succeeds. That's a marginal timing margin, not a stuck
+    // slave -- worth a longer one-time startup budget rather than a
+    // flaky abort. If this still fails, read_all_slave_states() on
+    // failure is what actually tells you why.
+    bool request_operational_state(int retries = 200, int timeout_us = 50000, int dc_settle_us = 1'000'000);
 
     // Exchanges one cycle of process data. Returns the working counter;
     // callers should compare against the expected value to detect a
