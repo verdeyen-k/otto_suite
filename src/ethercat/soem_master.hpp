@@ -115,7 +115,16 @@ public:
     // gives a generous ~3s worst-case budget; success is typically near-
     // instant once frames stop having gaps. If this still fails,
     // read_all_slave_states() on failure is what tells you why.
-    bool request_operational_state(int retries = 3000, int dc_settle_us = 1'000'000);
+    // dc_settle_us default bumped from 1s to 3s -- with 4 DC-enabled
+    // eRobs, 2 dual-axis Copleys, and 3 DC-enabled splitters all needing
+    // their clocks to converge on one bus, 1s (copied from SOEM's own
+    // ec_sample.c, which guesses at the same number for its own simpler
+    // topologies) may just not be enough here. Experimental: confirmed on
+    // real hardware that a *different* subset of slaves (clean working
+    // counter, no AL error) intermittently fails to reach OPERATIONAL on
+    // this specific 9-slave topology; untested whether more settle time
+    // actually reduces that failure rate.
+    bool request_operational_state(int retries = 3000, int dc_settle_us = 3'000'000);
 
     // Exchanges one cycle of process data. Returns the working counter;
     // callers should compare against expected_wkc() to detect a
