@@ -79,3 +79,6 @@ target_link_libraries(bridge PUBLIC kinematics zmq)
 
 add_executable(chassis_link_check tools/chassis_link_check.cpp)
 target_link_libraries(chassis_link_check PRIVATE bridge zmq)
+
+add_executable(teleop tools/teleop.cpp)
+target_link_libraries(teleop PRIVATE zeroerr copley kinematics bridge)
