@@ -71,6 +71,16 @@ constexpr std::uint32_t kClearAllLatchingFaults = 0xFFFFFFFF;
 
 constexpr std::uint16_t kCopleyStoErrorCode = 0x5440;
 
+// Status of Safety Circuit (0x219D) -- a LIVE, continuous readout of the
+// physical STO input, independent of whether the axis has ever been
+// enabled (unlike the DS402 statusword FAULT bit / Error Code, which are
+// populated on a fault edge and may only latch once an enable is actually
+// attempted). Confirmed from the manual, p.70: "Set when safety input 0 is
+// preventing the drive from enabling" -- bit 0 is what to watch when
+// toggling the E-stop with the axis never enabled.
+constexpr std::uint16_t kSafetyCircuitStatusIndex = 0x219D;
+constexpr std::uint32_t kSafetyCircuitInput0Blocking = 1u << 0;
+
 constexpr std::uint16_t axis_object_offset(Axis axis) { return axis == Axis::A ? 0x0000 : 0x0800; }
 
 // Byte offsets within the combined Rx/Tx process image this driver

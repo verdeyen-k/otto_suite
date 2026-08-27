@@ -146,13 +146,20 @@ int main(int argc, char **argv) {
             }
             for (auto &t : targets) {
                 const auto s = t.handle.snapshot();
+                // Live, enable-independent SDO read of the STO input --
+                // separate from the fault/error_code fields, which are
+                // only populated on a fault edge and may need an actual
+                // enable attempt to latch. See copley_identity.hpp.
+                std::uint32_t safety = t.handle.read_safety_circuit_status();
+                bool sto_input_blocking = (safety & copley::kSafetyCircuitInput0Blocking) != 0;
                 std::printf(
                     "[%d/%c] state=%-22s sw=0x%04X cw=0x%04X vel=%8d(cmd=%8d) pos=%10d foll_err=%7d "
-                    "torque=%6d err=0x%04X fault=%s\033[K\n",
+                    "torque=%6d err=0x%04X fault=%s safety=0x%08X%s\033[K\n",
                     t.slave_index, t.axis == copley::Axis::A ? 'A' : 'B',
                     std::string(cia402::to_string(s.state)).c_str(), s.statusword_raw, s.controlword_raw,
                     s.velocity_actual_counts_per_s, s.commanded_velocity_counts_per_s, s.position_actual_counts,
-                    s.following_error_counts, s.torque_actual_raw, s.error_code, fault_flags(s));
+                    s.following_error_counts, s.torque_actual_raw, s.error_code, fault_flags(s), safety,
+                    sto_input_blocking ? " STO_INPUT_BLOCKING" : "");
             }
             std::fflush(stdout);
         }

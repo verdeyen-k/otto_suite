@@ -67,6 +67,13 @@ void CopleyAxis::clear_latching_faults() {
                        &kClearAllLatchingFaults, sizeof(kClearAllLatchingFaults));
 }
 
+std::uint32_t CopleyAxis::read_safety_circuit_status() const {
+    std::uint32_t value = 0;
+    master_.sdo_read(slave_index_, kSafetyCircuitStatusIndex + layout_.axis_object_offset, 0, &value,
+                      sizeof(value));
+    return value;
+}
+
 void CopleyAxis::update() {
     last_statusword_ = read_field<std::uint16_t>(master_, slave_index_, layout_.statusword_offset);
     const bool was_faulted = fsm_.has_fault();

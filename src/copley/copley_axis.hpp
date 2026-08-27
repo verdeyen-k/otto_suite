@@ -59,6 +59,13 @@ public:
     // doesn't clear from the controlword pulse alone.
     void clear_latching_faults();
 
+    // On-demand SDO read of the live Status of Safety Circuit (0x219D) --
+    // deliberately NOT part of update()'s per-cycle PDO exchange, since an
+    // SDO/mailbox round trip is much slower than one PDO cycle; call this
+    // only when you're about to display it (e.g. at a throttled print
+    // rate), not every cycle. See copley_identity.hpp for the bit meaning.
+    [[nodiscard]] std::uint32_t read_safety_circuit_status() const;
+
     [[nodiscard]] bool is_operational() const { return fsm_.is_operational(); }
     [[nodiscard]] bool has_fault() const { return fsm_.has_fault(); }
 
