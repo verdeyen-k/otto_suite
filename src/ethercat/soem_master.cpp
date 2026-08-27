@@ -74,11 +74,17 @@ void SoemMaster::set_config_func(int slave_index, std::function<void(SoemMaster 
 void SoemMaster::configure_pdos() {
     ecx_config_map_group(ctx_, io_map_.data(), 0);
     ecx_configdc(ctx_);
-    for (int i = 1; i <= slave_count_; ++i) {
-        if (ctx_->slavelist[i].CoEdetails > 0) {
-            ecx_slavembxcyclic(ctx_, i);
-        }
-    }
+    // Deliberately NOT calling ecx_slavembxcyclic() here (SOEM's own
+    // ec_sample.c does, for every CoE slave). That switches a slave's
+    // mailbox into a queued/cyclic mode which requires periodic
+    // ecx_mbxhandler() calls to actually service the queue -- we never
+    // call ecx_mbxhandler anywhere (we don't need a real-time mailbox
+    // pump, just occasional blocking SDO reads/writes), so every SDO
+    // transaction after ecx_slavembxcyclic() would just queue, time out
+    // waiting to be serviced, and fail. Confirmed on real hardware: every
+    // SDO read succeeded during config_func (which runs before this
+    // point) and every one failed afterward, on a completely healthy
+    // slave -- this was the cause, not anything wrong with the slave.
 }
 
 bool SoemMaster::wait_for_safe_op(int timeout_us) {
