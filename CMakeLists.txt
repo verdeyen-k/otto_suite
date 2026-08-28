@@ -60,16 +60,21 @@ target_link_libraries(copley_state PRIVATE copley)
 add_executable(full_shake tools/full_shake.cpp)
 target_link_libraries(full_shake PRIVATE zeroerr copley)
 
+add_library(robot
+  src/robot/robot_config.cpp
+)
+target_include_directories(robot PUBLIC src)
+
 add_library(kinematics
   src/kinematics/swerve_kinematics.cpp
 )
 target_include_directories(kinematics PUBLIC src)
 
 add_executable(kinematics_check tools/kinematics_check.cpp)
-target_link_libraries(kinematics_check PRIVATE kinematics)
+target_link_libraries(kinematics_check PRIVATE kinematics robot)
 
 add_executable(swerve_kinematics_test tools/swerve_kinematics_test.cpp)
-target_link_libraries(swerve_kinematics_test PRIVATE zeroerr copley kinematics)
+target_link_libraries(swerve_kinematics_test PRIVATE zeroerr copley kinematics robot)
 
 add_library(bridge
   src/bridge/chassis_link.cpp
@@ -81,4 +86,4 @@ add_executable(chassis_link_check tools/chassis_link_check.cpp)
 target_link_libraries(chassis_link_check PRIVATE bridge zmq)
 
 add_executable(teleop tools/teleop.cpp)
-target_link_libraries(teleop PRIVATE zeroerr copley kinematics bridge)
+target_link_libraries(teleop PRIVATE zeroerr copley kinematics bridge robot)

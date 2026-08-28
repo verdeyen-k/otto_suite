@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>otto_suite teleop</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #14161a;
+    --panel: #1e2127;
+    --border: #2c3038;
+    --text: #e6e8eb;
+    --muted: #8a8f98;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+    --accent: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 16px;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 12px; }
+  .banner {
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 16px;
+    margin-bottom: 16px;
+    border: 1px solid var(--border);
+  }
+  .banner.ok { background: rgba(63, 185, 80, 0.12); color: var(--ok); border-color: var(--ok); }
+  .banner.warn { background: rgba(210, 153, 34, 0.12); color: var(--warn); border-color: var(--warn); }
+  .banner.bad { background: rgba(248, 81, 73, 0.12); color: var(--bad); border-color: var(--bad); }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .panel h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin: 0 0 8px;
+    font-weight: 600;
+  }
+  .row { display: flex; justify-content: space-between; padding: 2px 0; }
+  .row .label { color: var(--muted); }
+  .row .value { font-variant-numeric: tabular-nums; }
+  .modules {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .module { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--panel); }
+  .module.fault { border-color: var(--bad); background: rgba(248, 81, 73, 0.08); }
+  .module .name { font-weight: 600; margin-bottom: 6px; }
+  .module .name .fault-tag { color: var(--bad); font-size: 12px; margin-left: 6px; }
+  .note {
+    color: var(--muted);
+    font-size: 13px;
+    border-top: 1px solid var(--border);
+    padding-top: 12px;
+    margin-top: 8px;
+  }
+  code { background: var(--border); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+  <h1>otto_suite teleop</h1>
+  <div id="banner" class="banner warn">Connecting...</div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Gamepad</h2>
+      <div class="row"><span class="label">Status</span><span class="value" id="gp-status">not detected</span></div>
+      <div class="row"><span class="label">Axis 0 (left X)</span><span class="value" id="axis-0">0.00</span></div>
+      <div class="row"><span class="label">Axis 1 (left Y)</span><span class="value" id="axis-1">0.00</span></div>
+      <div class="row"><span class="label">Axis 3 (right X)</span><span class="value" id="axis-3">0.00</span></div>
+    </div>
+    <div class="panel">
+      <h2>Commanded</h2>
+      <div class="row"><span class="label">vx (m/s)</span><span class="value" id="cmd-vx">0.000</span></div>
+      <div class="row"><span class="label">vy (m/s)</span><span class="value" id="cmd-vy">0.000</span></div>
+      <div class="row"><span class="label">omega (rad/s)</span><span class="value" id="cmd-omega">0.000</span></div>
+    </div>
+    <div class="panel">
+      <h2>Odometry (measured)</h2>
+      <div class="row"><span class="label">vx (m/s)</span><span class="value" id="odom-vx">0.000</span></div>
+      <div class="row"><span class="label">vy (m/s)</span><span class="value" id="odom-vy">0.000</span></div>
+      <div class="row"><span class="label">omega (rad/s)</span><span class="value" id="odom-omega">0.000</span></div>
+    </div>
+  </div>
+
+  <div class="modules" id="modules"></div>
+
+  <div class="note">
+    Axis mapping (left X = strafe, left Y = forward, right X = rotate) is the
+    standard XInput-via-SDL layout but has not been independently confirmed
+    against this specific controller -- watch the raw axis readouts above
+    while moving one stick at a time if commanded motion looks wrong.
+    Closing this tab, losing focus, or losing network all stop commands
+    flowing -- <code>teleop</code>'s own watchdog then disables the
+    actuators exactly as it always has.
+  </div>
+
+<script>
+const MODULE_LABELS = {fl: "FL", fr: "FR", rl: "RL", rr: "RR"};
+const DEADZONE = 0.1;
+const SEND_HZ = 50;
+
+let speedLimits = {max_speed_mps: 0.5, max_omega_deg_s: 60};
+let ws = null;
+let wsOpen = false;
+let gamepadIndex = null;
+let lastSendTime = 0;
+
+function applyDeadzone(v) {
+  if (Math.abs(v) < DEADZONE) return 0;
+  const sign = v > 0 ? 1 : -1;
+  return sign * (Math.abs(v) - DEADZONE) / (1 - DEADZONE);
+}
+
+function setBanner(cls, text) {
+  const el = document.getElementById("banner");
+  el.className = "banner " + cls;
+  el.textContent = text;
+}
+
+function connectWebSocket() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(`${proto}//${location.host}/ws`);
+  ws.onopen = () => { wsOpen = true; updateBanner(); };
+  ws.onclose = () => { wsOpen = false; updateBanner(); setTimeout(connectWebSocket, 1000); };
+  ws.onerror = () => ws.close();
+  ws.onmessage = (event) => renderTelemetry(JSON.parse(event.data));
+}
+
+let lastTelemetry = null;
+
+function updateBanner() {
+  if (!wsOpen) {
+    setBanner("bad", "Disconnected from robot -- commands are NOT being sent.");
+  } else if (gamepadIndex === null) {
+    setBanner("warn", "Connected. No gamepad detected -- press a button on the controller to activate it.");
+  } else if (lastTelemetry && lastTelemetry.any_fault) {
+    setBanner("bad", "Connected. FAULT reported by one or more modules.");
+  } else {
+    setBanner("ok", "Connected. Driving.");
+  }
+}
+
+function renderTelemetry(msg) {
+  lastTelemetry = msg;
+  document.getElementById("odom-vx").textContent = msg.odom.vx.toFixed(3);
+  document.getElementById("odom-vy").textContent = msg.odom.vy.toFixed(3);
+  document.getElementById("odom-omega").textContent = msg.odom.omega.toFixed(3);
+
+  const container = document.getElementById("modules");
+  container.innerHTML = "";
+  for (const mod of msg.modules) {
+    const div = document.createElement("div");
+    div.className = "module" + (mod.fault ? " fault" : "");
+    div.innerHTML = `
+      <div class="name">${MODULE_LABELS[mod.name] || mod.name}${mod.fault ? '<span class="fault-tag">FAULT</span>' : ""}</div>
+      <div class="row"><span class="label">Angle</span><span class="value">${mod.angle_deg.toFixed(1)}&deg;</span></div>
+      <div class="row"><span class="label">Speed</span><span class="value">${mod.speed_mps.toFixed(3)} m/s</span></div>
+    `;
+    container.appendChild(div);
+  }
+  updateBanner();
+}
+
+window.addEventListener("gamepadconnected", (e) => {
+  gamepadIndex = e.gamepad.index;
+  document.getElementById("gp-status").textContent = e.gamepad.id;
+  updateBanner();
+});
+window.addEventListener("gamepaddisconnected", () => {
+  gamepadIndex = null;
+  document.getElementById("gp-status").textContent = "not detected";
+  updateBanner();
+});
+
+function pollGamepad(timestamp) {
+  requestAnimationFrame(pollGamepad);
+
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  const pad = gamepadIndex !== null ? pads[gamepadIndex] : null;
+  if (!pad) return;
+
+  const rawAxis0 = pad.axes[0] || 0;
+  const rawAxis1 = pad.axes[1] || 0;
+  const rawAxis3 = pad.axes[3] || 0;
+  document.getElementById("axis-0").textContent = rawAxis0.toFixed(2);
+  document.getElementById("axis-1").textContent = rawAxis1.toFixed(2);
+  document.getElementById("axis-3").textContent = rawAxis3.toFixed(2);
+
+  const maxOmegaRadS = speedLimits.max_omega_deg_s * Math.PI / 180;
+  const vy = -applyDeadzone(rawAxis0) * speedLimits.max_speed_mps;   // left stick X -> strafe
+  const vx = -applyDeadzone(rawAxis1) * speedLimits.max_speed_mps;   // left stick Y -> forward
+  const omega = -applyDeadzone(rawAxis3) * maxOmegaRadS;             // right stick X -> rotate
+
+  document.getElementById("cmd-vx").textContent = vx.toFixed(3);
+  document.getElementById("cmd-vy").textContent = vy.toFixed(3);
+  document.getElementById("cmd-omega").textContent = omega.toFixed(3);
+
+  if (timestamp - lastSendTime < 1000 / SEND_HZ) return;
+  lastSendTime = timestamp;
+  if (wsOpen && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({vx, vy, omega}));
+  }
+}
+
+fetch("/config")
+  .then((r) => r.json())
+  .then((limits) => { speedLimits = limits; })
+  .catch(() => {});
+
+connectWebSocket();
+requestAnimationFrame(pollGamepad);
+</script>
+</body>
+</html>

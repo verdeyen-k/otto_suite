@@ -13,6 +13,7 @@
 // directions retry for a few seconds rather than sending/checking once.
 #include <zmq.h>
 
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -86,10 +87,16 @@ int main() {
     // Telemetry direction: retry receiving until the slow-joiner window
     // closes.
     kinematics::ChassisSpeeds telemetry_speeds{0.3, 0.2, -0.1};
+    const std::array<bridge::ModuleTelemetry, 4> module_telemetry{
+        bridge::ModuleTelemetry{10.0, 0.05, false},
+        bridge::ModuleTelemetry{-10.0, 0.06, true},
+        bridge::ModuleTelemetry{20.0, -0.05, false},
+        bridge::ModuleTelemetry{-20.0, -0.06, false},
+    };
     bridge::ChassisTelemetryWire telemetry_wire{};
     bool telemetry_received = false;
     for (int attempt = 0; attempt < 40 && !telemetry_received; ++attempt) {
-        chassis_link.publish_telemetry(telemetry_speeds, /*any_fault=*/true);
+        chassis_link.publish_telemetry(telemetry_speeds, /*any_fault=*/true, module_telemetry);
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         int rc = zmq_recv(fake_teleop_sub, &telemetry_wire, sizeof(telemetry_wire), ZMQ_DONTWAIT);
         if (rc == static_cast<int>(sizeof(telemetry_wire))) {
@@ -102,6 +109,14 @@ int main() {
         expect_near(telemetry_wire.vy_mps, 0.2, "telemetry vy");
         expect_near(telemetry_wire.omega_rad_per_s, -0.1, "telemetry omega");
         expect(telemetry_wire.any_fault == 1, "telemetry any_fault flag");
+        for (std::size_t i = 0; i < module_telemetry.size(); ++i) {
+            expect_near(telemetry_wire.modules[i].steer_angle_deg, module_telemetry[i].angle_deg,
+                        "module steer angle");
+            expect_near(telemetry_wire.modules[i].drive_speed_mps, module_telemetry[i].speed_mps,
+                        "module drive speed");
+            expect(telemetry_wire.modules[i].has_fault == (module_telemetry[i].has_fault ? 1 : 0),
+                   "module fault flag");
+        }
     }
 
     zmq_close(fake_teleop_pub);

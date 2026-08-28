@@ -1,7 +1,10 @@
 // Live teleop driver: brings up all 4 swerve modules exactly like
 // swerve_kinematics_test.cpp, then instead of a fixed phase sequence,
 // drives them from ChassisSpeeds commands received over the ZeroMQ bridge
-// (src/bridge/), normally from tools/teleop_joystick.py.
+// (src/bridge/), normally from tools/web_teleop/bridge.py (a webpage
+// served from this machine, controller read via the browser's Gamepad
+// API -- see that directory) or, for a no-browser CLI fallback,
+// tools/teleop_joystick.py.
 //
 // Safety design, in order of how a live command feed can fail:
 //
@@ -35,8 +38,11 @@
 //     [--max-steer-rate-deg-s 180] [--max-steer-accel-deg-s2 600] [--max-accel-mps2 0.3] \
 //     [--hold-ms 150] [--disable-ms 1000] [--stagger-ms 100]
 //
-// Then, from any machine that can reach this one:
-//   python3 tools/teleop_joystick.py --host <this machine's address>
+// Then, on this same machine:
+//   python3 tools/web_teleop/bridge.py
+// and open http://<this machine's address>:8080/ from a browser on any
+// machine that can reach it, with the Xbox controller attached there.
+// (Or, without a browser: python3 tools/teleop_joystick.py --host <this machine's address>)
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -46,6 +52,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -57,7 +65,7 @@
 #include "copley/copley_identity.hpp"
 #include "ethercat/soem_master.hpp"
 #include "kinematics/swerve_kinematics.hpp"
-#include "robot/robot_constants.hpp"
+#include "robot/robot_config.hpp"
 #include "zeroerr/zeroerr_actuator.hpp"
 #include "zeroerr/zeroerr_identity.hpp"
 
@@ -84,17 +92,18 @@ struct Args {
     std::array<bool, 4> have_module{false, false, false, false};
     int command_port = bridge::kCommandPort;
     int telemetry_port = bridge::kTelemetryPort;
-    double max_speed_mps = 0.15;
-    double max_omega_deg_s = 30.0;
-    double max_steer_rate_deg_s = 180.0;
-    // eRob manual Table 12-1: "Recommended Acc./Dec. Time >= 0.3s" to reach
-    // max angular velocity -- 600 deg/s^2 matches reaching the default
-    // 180 deg/s rate over that same 0.3s, rather than a velocity step.
-    double max_steer_accel_deg_s2 = 600.0;
-    double max_accel_mps2 = 0.3;
+    // NaN means "not given on the command line" -- filled in from the
+    // robot config file after parsing, unless overridden here.
+    double max_speed_mps = std::numeric_limits<double>::quiet_NaN();
+    double max_omega_deg_s = std::numeric_limits<double>::quiet_NaN();
+    double max_steer_rate_deg_s = std::numeric_limits<double>::quiet_NaN();
+    double max_steer_accel_deg_s2 = std::numeric_limits<double>::quiet_NaN();
+    double max_accel_mps2 = std::numeric_limits<double>::quiet_NaN();
+    double max_wheel_speed_rpm = std::numeric_limits<double>::quiet_NaN();
     double hold_ms = 150.0;
     double disable_ms = 1000.0;
     double stagger_ms = 100.0;
+    std::string config_path = robot::kDefaultConfigPath;
 };
 
 [[noreturn]] void usage_and_exit(const char *prog) {
@@ -103,13 +112,21 @@ struct Args {
                  "         [--command-port 5555] [--telemetry-port 5556]\n"
                  "         [--max-speed-mps 0.15] [--max-omega-deg-s 30]\n"
                  "         [--max-steer-rate-deg-s 180] [--max-steer-accel-deg-s2 600] [--max-accel-mps2 0.3]\n"
-                 "         [--hold-ms 150] [--disable-ms 1000] [--stagger-ms 100]\n"
-                 "  All four of --fl/--fr/--rl/--rr are required.\n",
+                 "         [--max-wheel-speed-rpm 57] [--hold-ms 150] [--disable-ms 1000] [--stagger-ms 100]\n"
+                 "         [--config config/robot_constants.yaml]\n"
+                 "  max-speed-mps/max-omega-deg-s/max-steer-rate-deg-s/max-steer-accel-deg-s2/max-accel-mps2/\n"
+                 "  max-wheel-speed-rpm/--fl/--fr/--rl/--rr all default to the robot config file's values;\n"
+                 "  pass a flag to override it for one run (e.g. after a re-scan shows different slaves).\n",
                  prog);
     std::exit(2);
 }
 
 const char *axis_name(copley::Axis axis) { return axis == copley::Axis::A ? "A" : "B"; }
+
+ModuleTarget from_bus_location(const robot::ModuleBusLocation &loc) {
+    return ModuleTarget{loc.steer_slave, loc.drive_slave,
+                         loc.drive_axis == 'a' ? copley::Axis::A : copley::Axis::B};
+}
 
 ModuleTarget parse_module(const std::string &spec, const char *prog) {
     ModuleTarget t;
@@ -181,20 +198,21 @@ Args parse_args(int argc, char **argv) {
             args.max_steer_accel_deg_s2 = std::atof(next().c_str());
         } else if (arg == "--max-accel-mps2") {
             args.max_accel_mps2 = std::atof(next().c_str());
+        } else if (arg == "--max-wheel-speed-rpm") {
+            args.max_wheel_speed_rpm = std::atof(next().c_str());
         } else if (arg == "--hold-ms") {
             args.hold_ms = std::atof(next().c_str());
         } else if (arg == "--disable-ms") {
             args.disable_ms = std::atof(next().c_str());
         } else if (arg == "--stagger-ms") {
             args.stagger_ms = std::atof(next().c_str());
+        } else if (arg == "--config") {
+            args.config_path = next();
         } else {
             usage_and_exit(argv[0]);
         }
     }
     if (args.iface.empty()) usage_and_exit(argv[0]);
-    for (bool have : args.have_module) {
-        if (!have) usage_and_exit(argv[0]);
-    }
     return args;
 }
 
@@ -203,18 +221,30 @@ constexpr double kCycleSeconds = kCycle.count() / 1e6;
 
 int cycles_for(double seconds) { return static_cast<int>(seconds / kCycleSeconds); }
 
-double counts_per_s_to_mps(std::int32_t counts_per_s) {
-    double motor_rev_per_s = static_cast<double>(counts_per_s) / robot::kDriveEncoderCountsPerRev;
-    double wheel_rev_per_s = motor_rev_per_s / robot::kDriveGearRatio;
-    return wheel_rev_per_s * 2.0 * M_PI * robot::kWheelRadiusM;
+double counts_per_s_to_mps(const robot::RobotConfig &cfg, std::int32_t counts_per_s) {
+    double motor_rev_per_s = static_cast<double>(counts_per_s) / cfg.drive_encoder_counts_per_rev;
+    double wheel_rev_per_s = motor_rev_per_s / cfg.drive_gear_ratio;
+    return wheel_rev_per_s * 2.0 * M_PI * cfg.wheel_radius_m();
 }
-std::int32_t mps_to_counts_per_s(double mps) {
-    double wheel_rev_per_s = mps / (2.0 * M_PI * robot::kWheelRadiusM);
-    double motor_rev_per_s = wheel_rev_per_s * robot::kDriveGearRatio;
-    return static_cast<std::int32_t>(std::lround(motor_rev_per_s * robot::kDriveEncoderCountsPerRev));
+std::int32_t mps_to_counts_per_s(const robot::RobotConfig &cfg, double mps) {
+    double wheel_rev_per_s = mps / (2.0 * M_PI * cfg.wheel_radius_m());
+    double motor_rev_per_s = wheel_rev_per_s * cfg.drive_gear_ratio;
+    return static_cast<std::int32_t>(std::lround(motor_rev_per_s * cfg.drive_encoder_counts_per_rev));
 }
 
 double clamp_magnitude(double value, double max_abs) { return std::clamp(value, -max_abs, max_abs); }
+
+// Scales (vx, vy) down together, preserving direction, if their combined
+// magnitude exceeds max_speed_mps -- clamping vx/vy independently instead
+// would distort the commanded heading whenever only one axis needed
+// clamping (e.g. vx=0.4, vy=0.15 clamped to 0.15 each becomes a 45-degree
+// command instead of a slightly-slower version of the original heading).
+kinematics::ChassisSpeeds clamp_translation(double vx_mps, double vy_mps, double max_speed_mps) {
+    const double magnitude = std::hypot(vx_mps, vy_mps);
+    if (magnitude <= max_speed_mps || magnitude <= 0.0) return {vx_mps, vy_mps, 0.0};
+    const double scale = max_speed_mps / magnitude;
+    return {vx_mps * scale, vy_mps * scale, 0.0};
+}
 
 void print_unhealthy_slaves(ethercat::SoemMaster &master) {
     int wkc = master.send_receive();
@@ -233,8 +263,33 @@ int main(int argc, char **argv) {
     Args args = parse_args(argc, argv);
     std::signal(SIGINT, on_sigint);
 
+    robot::RobotConfig cfg;
+    try {
+        cfg = robot::load_robot_config(args.config_path);
+    } catch (const std::exception &e) {
+        std::fprintf(stderr, "error: %s\n", e.what());
+        return 1;
+    }
+    const auto module_positions = cfg.module_positions();
+
+    // CLI flag, if given, overrides the config file's value for this run.
+    if (std::isnan(args.max_speed_mps)) args.max_speed_mps = cfg.max_speed_mps;
+    if (std::isnan(args.max_omega_deg_s)) args.max_omega_deg_s = cfg.max_omega_deg_s;
+    if (std::isnan(args.max_steer_rate_deg_s)) args.max_steer_rate_deg_s = cfg.max_steer_rate_deg_s;
+    if (std::isnan(args.max_steer_accel_deg_s2)) args.max_steer_accel_deg_s2 = cfg.max_steer_accel_deg_s2;
+    if (std::isnan(args.max_accel_mps2)) args.max_accel_mps2 = cfg.max_accel_mps2;
+    if (std::isnan(args.max_wheel_speed_rpm)) args.max_wheel_speed_rpm = cfg.max_wheel_speed_rpm;
+    for (std::size_t j = 0; j < args.modules.size(); ++j) {
+        if (!args.have_module[j]) args.modules[j] = from_bus_location(cfg.module_bus_locations[j]);
+    }
+
     const double max_omega_rad_s = args.max_omega_deg_s * M_PI / 180.0;
     const double max_steer_rate_rad_s = args.max_steer_rate_deg_s * M_PI / 180.0;
+    // Wheel-speed cap uses the (possibly CLI-overridden) RPM value, not
+    // cfg's directly, converted with the same wheel radius the drive
+    // encoder scale uses.
+    const double max_wheel_speed_mps =
+        args.max_wheel_speed_rpm / 60.0 * 2.0 * M_PI * cfg.wheel_radius_m();
     const double max_steer_accel_rad_s2 = args.max_steer_accel_deg_s2 * M_PI / 180.0;
 
     ethercat::SoemMaster master(args.iface);
@@ -431,8 +486,7 @@ int main(int argc, char **argv) {
     }
 
     kinematics::SwerveKinematics kinematics_solver(
-        {robot::kModulePositions[0], robot::kModulePositions[1], robot::kModulePositions[2],
-         robot::kModulePositions[3]});
+        {module_positions[0], module_positions[1], module_positions[2], module_positions[3]});
 
     // last_commanded_angle_rad/last_commanded_speed_mps are the ACTUAL
     // last values written to hardware -- both are advanced toward the
@@ -457,7 +511,8 @@ int main(int argc, char **argv) {
     std::array<double, 4> last_commanded_angular_velocity_rad_s{0.0, 0.0, 0.0, 0.0};
     std::array<double, 4> last_commanded_speed_mps{0.0, 0.0, 0.0, 0.0};
     for (std::size_t j = 0; j < 4; ++j) {
-        last_commanded_angle_rad[j] = steer_actuators[j].snapshot().position_deg * M_PI / 180.0;
+        last_commanded_angle_rad[j] =
+            (steer_actuators[j].snapshot().position_deg - cfg.steer_angle_offset_deg[j]) * M_PI / 180.0;
     }
 
     bridge::ChassisLink chassis_link(args.command_port, args.telemetry_port);
@@ -496,9 +551,10 @@ int main(int argc, char **argv) {
         auto received = chassis_link.try_receive_command();
         if (received.has_value()) {
             const bool was_disabled = disabled_for_safety;
+            const kinematics::ChassisSpeeds clamped_translation =
+                clamp_translation(received->vx_mps, received->vy_mps, args.max_speed_mps);
             last_received = kinematics::ChassisSpeeds{
-                clamp_magnitude(received->vx_mps, args.max_speed_mps),
-                clamp_magnitude(received->vy_mps, args.max_speed_mps),
+                clamped_translation.vx_mps, clamped_translation.vy_mps,
                 clamp_magnitude(received->omega_rad_per_s, max_omega_rad_s)};
             last_command_time = std::chrono::steady_clock::now();
             if (was_disabled) {
@@ -574,6 +630,10 @@ int main(int argc, char **argv) {
 
         std::array<kinematics::ModuleState, 4> desired =
             target_nonzero ? kinematics_solver.to_module_states(target) : std::array<kinematics::ModuleState, 4>{};
+        // A combined translate+rotate target can ask one wheel to spin
+        // faster than max_speed_mps/max_omega_deg_s alone imply -- derate
+        // every module uniformly (not per-module) so heading stays correct.
+        kinematics::SwerveKinematics::desaturate_wheel_speeds(desired, max_wheel_speed_mps);
 
         for (std::size_t j = 0; j < 4; ++j) {
             steer_actuators[j].update();
@@ -614,8 +674,9 @@ int main(int argc, char **argv) {
             const double speed_delta = target_speed_mps - last_commanded_speed_mps[j];
             last_commanded_speed_mps[j] += clamp_magnitude(speed_delta, max_speed_step);
 
-            steer_actuators[j].set_target_angle_deg(last_commanded_angle_rad[j] * 180.0 / M_PI);
-            drive_axes[j].set_target_velocity_counts_per_s(mps_to_counts_per_s(last_commanded_speed_mps[j]));
+            steer_actuators[j].set_target_angle_deg(last_commanded_angle_rad[j] * 180.0 / M_PI +
+                                                      cfg.steer_angle_offset_deg[j]);
+            drive_axes[j].set_target_velocity_counts_per_s(mps_to_counts_per_s(cfg, last_commanded_speed_mps[j]));
 
             // Rising-edge fault logging: the earlier bring-up checkpoints
             // print error codes, but this live loop's periodic re-arm
@@ -640,14 +701,18 @@ int main(int argc, char **argv) {
 
         if (cycle % kTelemetryEveryNCycles == 0) {
             std::array<kinematics::ModuleState, 4> measured{};
+            std::array<bridge::ModuleTelemetry, 4> module_telemetry{};
             for (std::size_t j = 0; j < 4; ++j) {
                 auto steer_s = steer_actuators[j].snapshot();
                 auto drive_s = drive_axes[j].snapshot();
-                measured[j] = kinematics::ModuleState{counts_per_s_to_mps(drive_s.velocity_actual_counts_per_s),
-                                                        steer_s.position_deg * M_PI / 180.0};
+                const double wheel_angle_deg = steer_s.position_deg - cfg.steer_angle_offset_deg[j];
+                const double wheel_speed_mps = counts_per_s_to_mps(cfg, drive_s.velocity_actual_counts_per_s);
+                measured[j] = kinematics::ModuleState{wheel_speed_mps, wheel_angle_deg * M_PI / 180.0};
+                module_telemetry[j] = bridge::ModuleTelemetry{wheel_angle_deg, wheel_speed_mps,
+                                                                steer_s.has_fault || drive_s.has_fault};
             }
             kinematics::ChassisSpeeds odom = kinematics_solver.to_chassis_speeds(measured);
-            chassis_link.publish_telemetry(odom, any_fault());
+            chassis_link.publish_telemetry(odom, any_fault(), module_telemetry);
         }
 
         if (cycle % kPrintEveryNCycles == 0) {

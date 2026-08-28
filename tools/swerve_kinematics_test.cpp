@@ -4,7 +4,7 @@
 // for the first time against real hardware: ChassisSpeeds -> per-module
 // (angle, speed) via SwerveKinematics::to_module_states(), steering-delta
 // minimization via SwerveKinematics::optimize(), unit conversion via
-// robot_constants.hpp's wheel radius + drive encoder scale, and the
+// config/robot_constants.yaml's wheel radius + drive encoder scale, and the
 // forward direction (measured per-module state -> reconstructed chassis
 // speed) via SwerveKinematics::to_chassis_speeds(), printed periodically
 // as an odometry sanity check against what was actually commanded.
@@ -26,11 +26,12 @@
 //     --rl steer=8,drive=3,axis=a \
 //     --rr steer=9,drive=3,axis=b \
 //     [--max-speed-mps 0.15] [--max-omega-deg-s 30] \
-//     [--phase-duration-s 4] [--ramp-s 1] [--stagger-ms 100]
+//     [--phase-duration-s 4] [--ramp-s 1] [--stagger-ms 100] \
+//     [--config config/robot_constants.yaml]
 //
 // Module positions (front-left/front-right/rear-left/rear-right) are fixed
-// by robot::kModulePositions -- --fl/--fr/--rl/--rr assign which physical
-// slave plays which role, all four are required.
+// by the config file's chassis geometry -- --fl/--fr/--rl/--rr assign
+// which physical slave plays which role, all four are required.
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -40,6 +41,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -50,7 +52,7 @@
 #include "copley/copley_identity.hpp"
 #include "ethercat/soem_master.hpp"
 #include "kinematics/swerve_kinematics.hpp"
-#include "robot/robot_constants.hpp"
+#include "robot/robot_config.hpp"
 #include "zeroerr/zeroerr_actuator.hpp"
 #include "zeroerr/zeroerr_identity.hpp"
 
@@ -80,6 +82,7 @@ struct Args {
     double phase_duration_s = 4.0;
     double ramp_s = 1.0;
     double stagger_ms = 100.0;
+    std::string config_path = robot::kDefaultConfigPath;
 };
 
 [[noreturn]] void usage_and_exit(const char *prog) {
@@ -87,7 +90,9 @@ struct Args {
                  "Usage: %s --iface IFNAME --fl steer=N,drive=M,axis={a|b} --fr ... --rl ... --rr ...\n"
                  "         [--max-speed-mps 0.15] [--max-omega-deg-s 30]\n"
                  "         [--phase-duration-s 4] [--ramp-s 1] [--stagger-ms 100]\n"
-                 "  All four of --fl/--fr/--rl/--rr are required.\n"
+                 "         [--config config/robot_constants.yaml]\n"
+                 "  --fl/--fr/--rl/--rr default to the robot config file's bus locations; pass a\n"
+                 "  flag to override one for this run.\n"
                  "  Runs forward -> strafe -> rotate -> diagonal -> stop, each ramped in\n"
                  "  and held for phase-duration-s.\n",
                  prog);
@@ -95,6 +100,11 @@ struct Args {
 }
 
 const char *axis_name(copley::Axis axis) { return axis == copley::Axis::A ? "A" : "B"; }
+
+ModuleTarget from_bus_location(const robot::ModuleBusLocation &loc) {
+    return ModuleTarget{loc.steer_slave, loc.drive_slave,
+                         loc.drive_axis == 'a' ? copley::Axis::A : copley::Axis::B};
+}
 
 ModuleTarget parse_module(const std::string &spec, const char *prog) {
     ModuleTarget t;
@@ -162,14 +172,13 @@ Args parse_args(int argc, char **argv) {
             args.ramp_s = std::atof(next().c_str());
         } else if (arg == "--stagger-ms") {
             args.stagger_ms = std::atof(next().c_str());
+        } else if (arg == "--config") {
+            args.config_path = next();
         } else {
             usage_and_exit(argv[0]);
         }
     }
     if (args.iface.empty()) usage_and_exit(argv[0]);
-    for (bool have : args.have_module) {
-        if (!have) usage_and_exit(argv[0]);
-    }
     return args;
 }
 
@@ -178,16 +187,16 @@ constexpr double kCycleSeconds = kCycle.count() / 1e6;
 
 int cycles_for(double seconds) { return static_cast<int>(seconds / kCycleSeconds); }
 
-// Direct-drive wheel <-> Copley motor encoder conversion (robot_constants.hpp).
-double counts_per_s_to_mps(std::int32_t counts_per_s) {
-    double motor_rev_per_s = static_cast<double>(counts_per_s) / robot::kDriveEncoderCountsPerRev;
-    double wheel_rev_per_s = motor_rev_per_s / robot::kDriveGearRatio;
-    return wheel_rev_per_s * 2.0 * M_PI * robot::kWheelRadiusM;
+// Direct-drive wheel <-> Copley motor encoder conversion (robot config).
+double counts_per_s_to_mps(const robot::RobotConfig &cfg, std::int32_t counts_per_s) {
+    double motor_rev_per_s = static_cast<double>(counts_per_s) / cfg.drive_encoder_counts_per_rev;
+    double wheel_rev_per_s = motor_rev_per_s / cfg.drive_gear_ratio;
+    return wheel_rev_per_s * 2.0 * M_PI * cfg.wheel_radius_m();
 }
-std::int32_t mps_to_counts_per_s(double mps) {
-    double wheel_rev_per_s = mps / (2.0 * M_PI * robot::kWheelRadiusM);
-    double motor_rev_per_s = wheel_rev_per_s * robot::kDriveGearRatio;
-    return static_cast<std::int32_t>(std::lround(motor_rev_per_s * robot::kDriveEncoderCountsPerRev));
+std::int32_t mps_to_counts_per_s(const robot::RobotConfig &cfg, double mps) {
+    double wheel_rev_per_s = mps / (2.0 * M_PI * cfg.wheel_radius_m());
+    double motor_rev_per_s = wheel_rev_per_s * cfg.drive_gear_ratio;
+    return static_cast<std::int32_t>(std::lround(motor_rev_per_s * cfg.drive_encoder_counts_per_rev));
 }
 
 kinematics::ChassisSpeeds lerp(const kinematics::ChassisSpeeds &a, const kinematics::ChassisSpeeds &b,
@@ -214,9 +223,21 @@ int main(int argc, char **argv) {
     Args args = parse_args(argc, argv);
     std::signal(SIGINT, on_sigint);
 
+    robot::RobotConfig cfg;
+    try {
+        cfg = robot::load_robot_config(args.config_path);
+    } catch (const std::exception &e) {
+        std::fprintf(stderr, "error: %s\n", e.what());
+        return 1;
+    }
+    const auto module_positions = cfg.module_positions();
+    for (std::size_t j = 0; j < args.modules.size(); ++j) {
+        if (!args.have_module[j]) args.modules[j] = from_bus_location(cfg.module_bus_locations[j]);
+    }
+
     const double max_omega_rad_s = args.max_omega_deg_s * M_PI / 180.0;
     std::printf("max_speed=%.3f m/s (%d counts/s), max_omega=%.1f deg/s\n", args.max_speed_mps,
-                mps_to_counts_per_s(args.max_speed_mps), args.max_omega_deg_s);
+                mps_to_counts_per_s(cfg, args.max_speed_mps), args.max_omega_deg_s);
 
     // Fixed motion sequence: forward, strafe left, rotate CCW in place,
     // diagonal (forward+strafe combined -- the case that most exercises
@@ -427,8 +448,7 @@ int main(int argc, char **argv) {
     }
 
     kinematics::SwerveKinematics kinematics_solver(
-        {robot::kModulePositions[0], robot::kModulePositions[1], robot::kModulePositions[2],
-         robot::kModulePositions[3]});
+        {module_positions[0], module_positions[1], module_positions[2], module_positions[3]});
     std::array<double, 4> last_commanded_angle_rad{};
 
     // Point the wheels at phase 0's target direction BEFORE commanding any
@@ -447,7 +467,7 @@ int main(int argc, char **argv) {
     std::array<double, 4> align_start_deg{};
     std::array<double, 4> align_target_deg{};
     for (std::size_t j = 0; j < 4; ++j) {
-        align_start_deg[j] = steer_actuators[j].snapshot().position_deg;
+        align_start_deg[j] = steer_actuators[j].snapshot().position_deg - cfg.steer_angle_offset_deg[j];
         kinematics::ModuleState optimized =
             kinematics::SwerveKinematics::optimize(phase0_desired[j], align_start_deg[j] * M_PI / 180.0);
         align_target_deg[j] = optimized.angle_rad * 180.0 / M_PI;
@@ -466,7 +486,7 @@ int main(int argc, char **argv) {
                 double elapsed_s = (i - static_cast<int>(j) * stagger_cycles) * kCycleSeconds;
                 double frac = args.ramp_s > 0.0 ? std::min(1.0, elapsed_s / args.ramp_s) : 1.0;
                 double angle_deg = align_start_deg[j] + (align_target_deg[j] - align_start_deg[j]) * frac;
-                steer_actuators[j].set_target_angle_deg(angle_deg);
+                steer_actuators[j].set_target_angle_deg(angle_deg + cfg.steer_angle_offset_deg[j]);
                 last_commanded_angle_rad[j] = angle_deg * M_PI / 180.0;
             }
         }
@@ -511,6 +531,7 @@ int main(int argc, char **argv) {
         const kinematics::ChassisSpeeds current = lerp(prev_target, kPhases[phase_index], frac);
 
         std::array<kinematics::ModuleState, 4> desired = kinematics_solver.to_module_states(current);
+        kinematics::SwerveKinematics::desaturate_wheel_speeds(desired, cfg.max_wheel_speed_mps());
 
         for (std::size_t j = 0; j < 4; ++j) {
             steer_actuators[j].update();
@@ -525,10 +546,11 @@ int main(int argc, char **argv) {
                 kinematics::SwerveKinematics::optimize(desired[j], last_commanded_angle_rad[j]);
             if (steer_active[j]) {
                 last_commanded_angle_rad[j] = optimized.angle_rad;
-                steer_actuators[j].set_target_angle_deg(optimized.angle_rad * 180.0 / M_PI);
+                steer_actuators[j].set_target_angle_deg(optimized.angle_rad * 180.0 / M_PI +
+                                                          cfg.steer_angle_offset_deg[j]);
             }
             if (drive_active[j]) {
-                drive_axes[j].set_target_velocity_counts_per_s(mps_to_counts_per_s(optimized.speed_mps));
+                drive_axes[j].set_target_velocity_counts_per_s(mps_to_counts_per_s(cfg, optimized.speed_mps));
             }
         }
         master.send_receive();
@@ -541,8 +563,9 @@ int main(int argc, char **argv) {
             for (std::size_t j = 0; j < 4; ++j) {
                 auto steer_s = steer_actuators[j].snapshot();
                 auto drive_s = drive_axes[j].snapshot();
-                measured[j] = kinematics::ModuleState{counts_per_s_to_mps(drive_s.velocity_actual_counts_per_s),
-                                                        steer_s.position_deg * M_PI / 180.0};
+                measured[j] = kinematics::ModuleState{
+                    counts_per_s_to_mps(cfg, drive_s.velocity_actual_counts_per_s),
+                    (steer_s.position_deg - cfg.steer_angle_offset_deg[j]) * M_PI / 180.0};
             }
             kinematics::ChassisSpeeds odom = kinematics_solver.to_chassis_speeds(measured);
             std::printf(

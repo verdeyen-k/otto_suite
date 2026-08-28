@@ -1,5 +1,6 @@
 #include "kinematics/swerve_kinematics.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 namespace kinematics {
@@ -88,6 +89,14 @@ ModuleState SwerveKinematics::optimize(const ModuleState &desired, double curren
         return ModuleState{-desired.speed_mps, flipped_angle};
     }
     return desired;
+}
+
+void SwerveKinematics::desaturate_wheel_speeds(std::array<ModuleState, 4> &states, double max_speed_mps) {
+    double max_actual_mps = 0.0;
+    for (const auto &s : states) max_actual_mps = std::max(max_actual_mps, std::abs(s.speed_mps));
+    if (max_actual_mps <= max_speed_mps || max_actual_mps <= 0.0) return;
+    const double scale = max_speed_mps / max_actual_mps;
+    for (auto &s : states) s.speed_mps *= scale;
 }
 
 }  // namespace kinematics

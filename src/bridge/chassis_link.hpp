@@ -16,12 +16,21 @@
 // driver tool consumes try_receive_command(), not here.
 #pragma once
 
+#include <array>
 #include <optional>
 
 #include "kinematics/swerve_kinematics.hpp"
 #include "bridge/messages.hpp"
 
 namespace bridge {
+
+// In-memory (unpacked) counterpart to ModuleTelemetryWire -- see
+// publish_telemetry.
+struct ModuleTelemetry {
+    double angle_deg = 0.0;
+    double speed_mps = 0.0;
+    bool has_fault = false;
+};
 
 class ChassisLink {
 public:
@@ -40,8 +49,10 @@ public:
     [[nodiscard]] std::optional<kinematics::ChassisSpeeds> try_receive_command();
 
     // Non-blocking, fire-and-forget: never worth blocking the real-time
-    // loop over a slow or absent subscriber.
-    void publish_telemetry(const kinematics::ChassisSpeeds &speeds, bool any_fault);
+    // loop over a slow or absent subscriber. modules is FL/FR/RL/RR order,
+    // same as everywhere else a per-module array is indexed.
+    void publish_telemetry(const kinematics::ChassisSpeeds &speeds, bool any_fault,
+                            const std::array<ModuleTelemetry, 4> &modules);
 
 private:
     void *context_ = nullptr;

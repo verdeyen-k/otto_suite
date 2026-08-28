@@ -12,7 +12,7 @@
 
 #include <array>
 
-#include "robot/robot_constants.hpp"
+#include "robot/robot_config.hpp"
 
 namespace kinematics {
 
@@ -47,6 +47,17 @@ public:
     // SwerveModuleState::Optimize uses. Pure trig, no vendor assumptions,
     // so ported directly rather than re-derived.
     [[nodiscard]] static ModuleState optimize(const ModuleState &desired, double current_angle_rad);
+
+    // Scales every module's speed by the same factor (if needed) so none
+    // exceeds max_speed_mps -- a combined translate+rotate command can
+    // require a per-wheel speed higher than either component implies on
+    // its own, and that per-wheel speed is what the actuator actually has
+    // to hit, not the chassis-level vx/vy/omega targets. Uniform scaling
+    // changes no module's angle, only magnitude, so the commanded path
+    // shape (and every module's steering angle) is unchanged, just slower.
+    // No-op if every module is already within the limit. Same trick
+    // WPILib's SwerveDriveKinematics::DesaturateWheelSpeeds uses.
+    static void desaturate_wheel_speeds(std::array<ModuleState, 4> &states, double max_speed_mps);
 
 private:
     std::array<robot::Translation2d, 4> module_positions_;

@@ -24,16 +24,24 @@ struct ChassisCommandWire {
     double omega_rad_per_s;
 };
 
+struct ModuleTelemetryWire {
+    double steer_angle_deg;   // measured, wheel frame (calibration offset already removed)
+    double drive_speed_mps;   // measured
+    std::uint8_t has_fault;   // this module's steer OR drive fault, 0 or 1
+};
+
 struct ChassisTelemetryWire {
-    double vx_mps;           // reconstructed from real per-module feedback, not the command
+    double vx_mps;            // reconstructed from real per-module feedback, not the command
     double vy_mps;
     double omega_rad_per_s;
-    std::uint8_t any_fault;  // 0 or 1
+    std::uint8_t any_fault;   // 0 or 1, whole-robot OR of every module's fault
+    ModuleTelemetryWire modules[4];  // front-left, front-right, rear-left, rear-right
 };
 
 #pragma pack(pop)
 
 static_assert(sizeof(ChassisCommandWire) == 24, "wire layout must stay packed/stable");
-static_assert(sizeof(ChassisTelemetryWire) == 25, "wire layout must stay packed/stable");
+static_assert(sizeof(ModuleTelemetryWire) == 17, "wire layout must stay packed/stable");
+static_assert(sizeof(ChassisTelemetryWire) == 93, "wire layout must stay packed/stable");
 
 }  // namespace bridge

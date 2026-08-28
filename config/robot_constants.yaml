@@ -1,0 +1,62 @@
+# Physical constants and runtime-tunable limits for this chassis.
+# Loaded at runtime by src/robot/robot_config.cpp -- flat "key: value"
+# pairs only, no nested structure. Edit this file; no rebuild needed.
+#
+# Chassis geometry and drivetrain facts are per-robot facts confirmed
+# directly (not derived from a manual): 475mm track width, 625mm
+# wheelbase, 170mm wheel diameter, 524288 counts/rev Copley encoder,
+# 1:1 direct drive.
+
+##### Robot Constants #####
+wheelbase_width_m: 0.475
+wheelbase_length_m: 0.625
+wheel_diameter_m: 0.172
+
+##### Robot performance constraints #####
+# Defaults for teleop's --max-speed-mps/--max-omega-deg-s/etc. -- pass the
+# matching CLI flag on a given run to override without editing this file.
+max_speed_mps: 0.5
+max_omega_deg_s: 60
+max_accel_mps2: 1
+
+###### Steering Actuators #####
+# eRob manual Table 12-1: "Recommended Acc./Dec. Time >= 0.3s" to reach max
+# rate over that same 0.3s, rather than a velocity step.
+max_steer_accel_deg_s2: 600.0
+# angular velocity -- 600 deg/s^2 matches reaching the default 180 deg/s
+max_steer_rate_deg_s: 180.0
+steer_angle_offset_deg_fl: 356.80
+steer_angle_offset_deg_fr: 119.88
+steer_angle_offset_deg_rl: 539.87
+steer_angle_offset_deg_rr: 11.09
+
+
+##### Drive Wheels #####
+drive_encoder_counts_per_rev: 524288
+drive_gear_ratio: 1.0
+
+# Hard ceiling on any single drive wheel's own rotational speed from datasheet.
+# Robot speeds are derated to keep the robot below this
+max_wheel_speed_rpm: 160
+
+##### Bus Locations #####
+# Which EtherCAT slave (and Copley axis A/B) plays each module's
+# steer/drive role -- from prior full_shake runs, NOT independently
+# verified against docs/ecatbustopo.md's physical layout notes (those two
+# have disagreed before: topology doc said slave 6, live testing showed
+# slave 7). If slave numbers ever seem off, re-scan (slaveinfo or any
+# tool's own scan output) rather than trusting either document blindly.
+# teleop/swerve_kinematics_test's --fl/--fr/--rl/--rr flags override these
+# per-run without editing this file.
+module_steer_slave_fl: 5
+module_drive_slave_fl: 2
+module_drive_axis_fl: b
+module_steer_slave_fr: 7
+module_drive_slave_fr: 2
+module_drive_axis_fr: a
+module_steer_slave_rl: 8
+module_drive_slave_rl: 3
+module_drive_axis_rl: b
+module_steer_slave_rr: 9
+module_drive_slave_rr: 3
+module_drive_axis_rr: a
