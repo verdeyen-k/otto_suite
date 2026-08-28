@@ -36,6 +36,21 @@
   .banner.ok { background: rgba(63, 185, 80, 0.12); color: var(--ok); border-color: var(--ok); }
   .banner.warn { background: rgba(210, 153, 34, 0.12); color: var(--warn); border-color: var(--warn); }
   .banner.bad { background: rgba(248, 81, 73, 0.12); color: var(--bad); border-color: var(--bad); }
+  .banner-row { display: flex; align-items: stretch; gap: 12px; margin-bottom: 16px; }
+  .banner-row .banner { flex: 1; margin-bottom: 0; }
+  #clear-faults-btn {
+    padding: 12px 20px;
+    border-radius: 8px;
+    border: 1px solid var(--bad);
+    background: rgba(248, 81, 73, 0.12);
+    color: var(--bad);
+    font-weight: 600;
+    font-size: 14px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #clear-faults-btn:hover:not(:disabled) { background: rgba(248, 81, 73, 0.22); }
+  #clear-faults-btn:disabled { opacity: 0.5; cursor: default; }
   .grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -81,7 +96,10 @@
 </head>
 <body>
   <h1>otto_suite teleop</h1>
-  <div id="banner" class="banner warn">Connecting...</div>
+  <div class="banner-row">
+    <div id="banner" class="banner warn">Connecting...</div>
+    <button id="clear-faults-btn" onclick="clearFaults()" disabled>Clear Faults</button>
+  </div>
 
   <div class="grid">
     <div class="panel">
@@ -115,6 +133,13 @@
     Closing this tab, losing focus, or losing network all stop commands
     flowing -- <code>teleop</code>'s own watchdog then disables the
     actuators exactly as it always has.
+    <br><br>
+    <strong>Clear Faults</strong> re-runs teleop's full startup recovery
+    (checks the EtherCAT bus is still OPERATIONAL, re-requesting it if
+    not; clears any CiA-402 fault; re-enables every actuator) -- it can
+    take several seconds, longer if the bus itself needs to recover, not
+    just a fault flag. Use it after a fault or E-stop instead of
+    restarting <code>teleop</code>.
   </div>
 
 <script>
@@ -143,10 +168,37 @@ function setBanner(cls, text) {
 function connectWebSocket() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   ws = new WebSocket(`${proto}//${location.host}/ws`);
-  ws.onopen = () => { wsOpen = true; updateBanner(); };
-  ws.onclose = () => { wsOpen = false; updateBanner(); setTimeout(connectWebSocket, 1000); };
+  ws.onopen = () => { wsOpen = true; updateBanner(); updateClearFaultsButton(); };
+  ws.onclose = () => {
+    wsOpen = false;
+    updateBanner();
+    updateClearFaultsButton();
+    setTimeout(connectWebSocket, 1000);
+  };
   ws.onerror = () => ws.close();
   ws.onmessage = (event) => renderTelemetry(JSON.parse(event.data));
+}
+
+let clearFaultsCooldownUntil = 0;
+
+function updateClearFaultsButton() {
+  const btn = document.getElementById("clear-faults-btn");
+  btn.disabled = !wsOpen || Date.now() < clearFaultsCooldownUntil;
+}
+
+function clearFaults() {
+  if (!wsOpen || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({type: "clear_faults"}));
+  // teleop.cpp's recovery is synchronous and can block for several
+  // seconds (longer if the EtherCAT bus itself needs to re-reach
+  // OPERATIONAL, not just a fault flag) -- there's no separate
+  // acknowledgement message, so disable the button for a cooldown long
+  // enough to cover that worst case rather than let repeated clicks pile
+  // up redundant requests.
+  clearFaultsCooldownUntil = Date.now() + 16000;
+  updateClearFaultsButton();
+  setBanner("warn", "Clear-faults requested -- this can take several seconds...");
+  setTimeout(updateClearFaultsButton, 16000);
 }
 
 let lastTelemetry = null;
@@ -221,7 +273,7 @@ function pollGamepad(timestamp) {
   if (timestamp - lastSendTime < 1000 / SEND_HZ) return;
   lastSendTime = timestamp;
   if (wsOpen && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({vx, vy, omega}));
+    ws.send(JSON.stringify({type: "command", vx, vy, omega}));
   }
 }
 

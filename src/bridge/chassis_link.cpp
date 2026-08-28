@@ -13,7 +13,7 @@ namespace {
 std::string tcp_bind_endpoint(int port) { return "tcp://*:" + std::to_string(port); }
 }  // namespace
 
-ChassisLink::ChassisLink(int command_port, int telemetry_port) {
+ChassisLink::ChassisLink(int command_port, int telemetry_port, int control_port) {
     context_ = zmq_ctx_new();
     if (context_ == nullptr) {
         throw std::runtime_error("zmq_ctx_new failed");
@@ -39,11 +39,21 @@ ChassisLink::ChassisLink(int command_port, int telemetry_port) {
         throw std::runtime_error("zmq_bind(telemetry, port " + std::to_string(telemetry_port) +
                                   ") failed: " + zmq_strerror(zmq_errno()));
     }
+
+    control_pull_ = zmq_socket(context_, ZMQ_PULL);
+    if (control_pull_ == nullptr) {
+        throw std::runtime_error("zmq_socket(PULL) failed");
+    }
+    if (zmq_bind(control_pull_, tcp_bind_endpoint(control_port).c_str()) != 0) {
+        throw std::runtime_error("zmq_bind(control, port " + std::to_string(control_port) +
+                                  ") failed: " + zmq_strerror(zmq_errno()));
+    }
 }
 
 ChassisLink::~ChassisLink() {
     if (command_sub_ != nullptr) zmq_close(command_sub_);
     if (telemetry_pub_ != nullptr) zmq_close(telemetry_pub_);
+    if (control_pull_ != nullptr) zmq_close(control_pull_);
     if (context_ != nullptr) zmq_ctx_term(context_);
 }
 
@@ -62,6 +72,25 @@ std::optional<kinematics::ChassisSpeeds> ChassisLink::try_receive_command() {
         return std::nullopt;
     }
     return kinematics::ChassisSpeeds{wire.vx_mps, wire.vy_mps, wire.omega_rad_per_s};
+}
+
+bool ChassisLink::try_receive_clear_faults_request() {
+    bool requested = false;
+    ControlCommandWire wire{};
+    // Drain everything queued -- a PULL socket (unlike the conflated
+    // command SUB) queues up to its high-water mark, so a burst of clicks
+    // must not be left to process one per cycle forever.
+    while (true) {
+        int rc = zmq_recv(control_pull_, &wire, sizeof(wire), ZMQ_DONTWAIT);
+        if (rc < 0) break;
+        if (rc != static_cast<int>(sizeof(wire))) {
+            std::fprintf(stderr, "bridge: control message wrong size (%d, expected %zu) -- ignoring\n", rc,
+                         sizeof(wire));
+            continue;
+        }
+        if (wire.clear_faults) requested = true;
+    }
+    return requested;
 }
 
 void ChassisLink::publish_telemetry(const kinematics::ChassisSpeeds &speeds, bool any_fault,

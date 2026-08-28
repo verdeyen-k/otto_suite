@@ -4,10 +4,12 @@
 // (header-only C++ bindings): libzmq's C API is small and stable enough
 // that a raw wrapper is simpler than adding another vendored dependency.
 //
-// The C++ real-time core BINDS both sockets (it's the long-lived process
-// tied to the hardware); Python CONNECTs to both. The command socket is a
-// SUB with ZMQ_CONFLATE set, so at most one message is ever queued -- a
-// backlogged/stale command can never accumulate and get processed late.
+// The C++ real-time core BINDS all three sockets (it's the long-lived
+// process tied to the hardware); Python CONNECTs to them. The command
+// socket is a SUB with ZMQ_CONFLATE set, so at most one message is ever
+// queued -- a backlogged/stale command can never accumulate and get
+// processed late. The control socket is a plain PULL (no conflate) --
+// see ControlCommandWire in messages.hpp for why.
 //
 // This class only moves ChassisSpeeds in and out; it does NOT implement
 // the "hold last command, then ramp to zero, then disable" watchdog
@@ -34,9 +36,11 @@ struct ModuleTelemetry {
 
 class ChassisLink {
 public:
-    // Binds tcp://*:command_port (SUB) and tcp://*:telemetry_port (PUB).
-    // Throws std::runtime_error if either socket fails to bind.
-    explicit ChassisLink(int command_port = kCommandPort, int telemetry_port = kTelemetryPort);
+    // Binds tcp://*:command_port (SUB), tcp://*:telemetry_port (PUB), and
+    // tcp://*:control_port (PULL). Throws std::runtime_error if any socket
+    // fails to bind.
+    explicit ChassisLink(int command_port = kCommandPort, int telemetry_port = kTelemetryPort,
+                          int control_port = kControlPort);
     ~ChassisLink();
 
     ChassisLink(const ChassisLink &) = delete;
@@ -48,6 +52,12 @@ public:
     // crashing the real-time loop over one bad packet).
     [[nodiscard]] std::optional<kinematics::ChassisSpeeds> try_receive_command();
 
+    // Non-blocking. Drains every queued control message (PULL sockets
+    // queue, unlike the conflated command SUB) and returns true if any of
+    // them was a clear-faults request -- multiple queued requests collapse
+    // to one action, since the action itself is idempotent.
+    [[nodiscard]] bool try_receive_clear_faults_request();
+
     // Non-blocking, fire-and-forget: never worth blocking the real-time
     // loop over a slow or absent subscriber. modules is FL/FR/RL/RR order,
     // same as everywhere else a per-module array is indexed.
@@ -58,6 +68,7 @@ private:
     void *context_ = nullptr;
     void *command_sub_ = nullptr;
     void *telemetry_pub_ = nullptr;
+    void *control_pull_ = nullptr;
 };
 
 }  // namespace bridge

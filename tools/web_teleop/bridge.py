@@ -19,6 +19,7 @@ Wire format must match src/bridge/messages.hpp exactly (little-endian,
 packed, no padding):
   command:   3x double                                       = 24 bytes
   telemetry: 3x double + 1 byte + 4x(2x double + 1 byte)      = 93 bytes
+  control:   1 byte                                           = 1 byte
 
 Usage:
   pip install aiohttp pyzmq
@@ -41,12 +42,15 @@ from aiohttp import WSMsgType, web
 
 COMMAND_PORT = 5555
 TELEMETRY_PORT = 5556
+CONTROL_PORT = 5557
 MODULE_NAMES = ("fl", "fr", "rl", "rr")
 
 COMMAND_FORMAT = "<ddd"
 TELEMETRY_FORMAT = "<dddB" + "ddB" * 4
+CONTROL_FORMAT = "<B"
 assert struct.calcsize(COMMAND_FORMAT) == 24, "must match ChassisCommandWire in messages.hpp"
 assert struct.calcsize(TELEMETRY_FORMAT) == 93, "must match ChassisTelemetryWire in messages.hpp"
+assert struct.calcsize(CONTROL_FORMAT) == 1, "must match ControlCommandWire in messages.hpp"
 
 STATIC_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = STATIC_DIR.parents[1] / "config" / "robot_constants.yaml"
@@ -91,6 +95,11 @@ async def websocket_handler(request):
     telemetry_sub.setsockopt(zmq.SUBSCRIBE, b"")
     telemetry_sub.setsockopt(zmq.CONFLATE, 1)
     telemetry_sub.connect(f"tcp://{zmq_host}:{TELEMETRY_PORT}")
+    # PUSH, not PUB -- a clear-faults click must not be silently dropped by
+    # a newer joystick-axis command arriving before teleop reads it (which
+    # is exactly what ZMQ_CONFLATE on command_pub is designed to do).
+    control_push = zmq_ctx.socket(zmq.PUSH)
+    control_push.connect(f"tcp://{zmq_host}:{CONTROL_PORT}")
 
     async def forward_commands():
         async for msg in ws:
@@ -98,10 +107,17 @@ async def websocket_handler(request):
                 continue
             try:
                 data = json.loads(msg.data)
-                wire = struct.pack(COMMAND_FORMAT, data["vx"], data["vy"], data["omega"])
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                msg_type = data.get("type")
+            except (TypeError, json.JSONDecodeError):
                 continue
-            command_pub.send(wire)
+            if msg_type == "command":
+                try:
+                    wire = struct.pack(COMMAND_FORMAT, data["vx"], data["vy"], data["omega"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                command_pub.send(wire)
+            elif msg_type == "clear_faults":
+                control_push.send(struct.pack(CONTROL_FORMAT, 1))
 
     async def forward_telemetry():
         while True:
@@ -127,6 +143,7 @@ async def websocket_handler(request):
             await telemetry_task
         command_pub.close()
         telemetry_sub.close()
+        control_push.close()
 
     return ws
 
@@ -147,7 +164,10 @@ def main():
     app.router.add_get("/ws", websocket_handler)
 
     print(f"Serving http://0.0.0.0:{args.http_port}/ -- open this from a browser with the Xbox controller.")
-    print(f"Relaying to teleop's ZeroMQ link on {args.zmq_host}:{COMMAND_PORT}/{TELEMETRY_PORT}.")
+    print(
+        f"Relaying to teleop's ZeroMQ link on {args.zmq_host}:"
+        f"{COMMAND_PORT}(command)/{TELEMETRY_PORT}(telemetry)/{CONTROL_PORT}(control)."
+    )
     web.run_app(app, host="0.0.0.0", port=args.http_port)
 
 

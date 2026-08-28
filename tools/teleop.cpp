@@ -92,6 +92,7 @@ struct Args {
     std::array<bool, 4> have_module{false, false, false, false};
     int command_port = bridge::kCommandPort;
     int telemetry_port = bridge::kTelemetryPort;
+    int control_port = bridge::kControlPort;
     // NaN means "not given on the command line" -- filled in from the
     // robot config file after parsing, unless overridden here.
     double max_speed_mps = std::numeric_limits<double>::quiet_NaN();
@@ -109,7 +110,7 @@ struct Args {
 [[noreturn]] void usage_and_exit(const char *prog) {
     std::fprintf(stderr,
                  "Usage: %s --iface IFNAME --fl steer=N,drive=M,axis={a|b} --fr ... --rl ... --rr ...\n"
-                 "         [--command-port 5555] [--telemetry-port 5556]\n"
+                 "         [--command-port 5555] [--telemetry-port 5556] [--control-port 5557]\n"
                  "         [--max-speed-mps 0.15] [--max-omega-deg-s 30]\n"
                  "         [--max-steer-rate-deg-s 180] [--max-steer-accel-deg-s2 600] [--max-accel-mps2 0.3]\n"
                  "         [--max-wheel-speed-rpm 57] [--hold-ms 150] [--disable-ms 1000] [--stagger-ms 100]\n"
@@ -188,6 +189,8 @@ Args parse_args(int argc, char **argv) {
             args.command_port = std::atoi(next().c_str());
         } else if (arg == "--telemetry-port") {
             args.telemetry_port = std::atoi(next().c_str());
+        } else if (arg == "--control-port") {
+            args.control_port = std::atoi(next().c_str());
         } else if (arg == "--max-speed-mps") {
             args.max_speed_mps = std::atof(next().c_str());
         } else if (arg == "--max-omega-deg-s") {
@@ -485,6 +488,52 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    // Manual recovery, triggered by the web dashboard's "Clear Faults"
+    // button. Deliberately more thorough than the live loop's own
+    // periodic re-arm (below): that one only pulses FaultReset on
+    // whichever actuators currently report a fault, which assumes the bus
+    // itself is still at OPERATIONAL and that a plain fault_reset is
+    // enough to resume -- neither is guaranteed. A fault_reset() alone
+    // only clears the CiA-402 fault bit; per the CiA-402 state machine
+    // that lands an axis in Switch On Disabled, not back in Operation
+    // Enabled, and nothing in the live loop calls enable() again after
+    // that. Separately, an E-stop/STO event can drop the whole EtherCAT
+    // bus below OPERATIONAL, which fault_reset() has no ability to fix at
+    // all -- only request_operational_state() can. This redoes the full
+    // startup sequence (bus state check -> clear faults -> staggered
+    // re-enable) on demand instead of requiring a process restart to get
+    // both of those.
+    auto manual_clear_faults = [&]() -> bool {
+        std::printf("Clear-faults request received.\n");
+        bool bus_operational = true;
+        for (const auto &s : master.read_all_slave_states()) {
+            if (s.al_state != 0x08 /* EC_STATE_OPERATIONAL */) {
+                bus_operational = false;
+                break;
+            }
+        }
+        if (!bus_operational) {
+            std::printf("  bus is not fully OPERATIONAL -- re-requesting (can take several seconds)...\n");
+            if (!master.request_operational_state()) {
+                std::fprintf(stderr, "  error: bus did not return to OPERATIONAL state\n");
+                print_unhealthy_slaves(master);
+                return false;
+            }
+            std::printf("  bus back at OPERATIONAL.\n");
+        }
+        update_all();
+        master.send_receive();
+        if (!try_clear_faults("manual clear-faults request")) {
+            return false;
+        }
+        if (!stagger_enable_all()) {
+            std::fprintf(stderr, "  error: not all actuators/axes reached OPERATION_ENABLED\n");
+            return false;
+        }
+        std::printf("Clear-faults request succeeded -- all actuators operational.\n");
+        return true;
+    };
+
     kinematics::SwerveKinematics kinematics_solver(
         {module_positions[0], module_positions[1], module_positions[2], module_positions[3]});
 
@@ -515,9 +564,11 @@ int main(int argc, char **argv) {
             cfg.raw_to_wheel_angle_deg(j, steer_actuators[j].snapshot().position_deg) * M_PI / 180.0;
     }
 
-    bridge::ChassisLink chassis_link(args.command_port, args.telemetry_port);
-    std::printf("Listening for ChassisSpeeds commands on tcp://*:%d, publishing telemetry on tcp://*:%d\n",
-                args.command_port, args.telemetry_port);
+    bridge::ChassisLink chassis_link(args.command_port, args.telemetry_port, args.control_port);
+    std::printf(
+        "Listening for ChassisSpeeds commands on tcp://*:%d, publishing telemetry on tcp://*:%d, "
+        "control (clear-faults) on tcp://*:%d\n",
+        args.command_port, args.telemetry_port, args.control_port);
     std::printf(
         "Watchdog: hold last command for %.0fms, decay to zero by %.0fms, disable if silent past that.\n",
         args.hold_ms, args.disable_ms);
@@ -548,6 +599,22 @@ int main(int argc, char **argv) {
 
     auto next_wake = std::chrono::steady_clock::now();
     while (!g_stop.load()) {
+        // Checked regardless of disabled_for_safety/fault state below --
+        // this is the whole point of a manual recovery action: it must
+        // work even when the normal command path is currently blocked.
+        // manual_clear_faults() blocks for a while (bus recovery alone can
+        // take several seconds), so reset both timing references
+        // afterward rather than let this cycle's stale next_wake/
+        // last_command_time make the loop spin to catch up or the
+        // watchdog immediately consider the very next cycle stale.
+        if (chassis_link.try_receive_clear_faults_request()) {
+            if (manual_clear_faults()) {
+                disabled_for_safety = false;
+                last_command_time = std::chrono::steady_clock::now();
+            }
+            next_wake = std::chrono::steady_clock::now();
+        }
+
         auto received = chassis_link.try_receive_command();
         if (received.has_value()) {
             const bool was_disabled = disabled_for_safety;

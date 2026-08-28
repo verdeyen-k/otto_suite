@@ -29,6 +29,7 @@ namespace {
 
 constexpr int kTestCommandPort = 15555;
 constexpr int kTestTelemetryPort = 15556;
+constexpr int kTestControlPort = 15557;
 int g_failures = 0;
 
 void expect(bool condition, const char *what) {
@@ -48,7 +49,7 @@ void expect_near(double actual, double expected, const char *what) {
 }  // namespace
 
 int main() {
-    bridge::ChassisLink chassis_link(kTestCommandPort, kTestTelemetryPort);
+    bridge::ChassisLink chassis_link(kTestCommandPort, kTestTelemetryPort, kTestControlPort);
 
     void *ctx = zmq_ctx_new();
 
@@ -62,6 +63,11 @@ int main() {
     void *fake_teleop_sub = zmq_socket(ctx, ZMQ_SUB);
     zmq_setsockopt(fake_teleop_sub, ZMQ_SUBSCRIBE, "", 0);
     zmq_connect(fake_teleop_sub, ("tcp://127.0.0.1:" + std::to_string(kTestTelemetryPort)).c_str());
+
+    // Raw PUSH standing in for the web bridge, connecting to the control
+    // PULL that ChassisLink just bound.
+    void *fake_bridge_push = zmq_socket(ctx, ZMQ_PUSH);
+    zmq_connect(fake_bridge_push, ("tcp://127.0.0.1:" + std::to_string(kTestControlPort)).c_str());
 
     // Command direction: retry sending until ChassisLink actually decodes
     // it, working around the slow-joiner window.
@@ -119,8 +125,33 @@ int main() {
         }
     }
 
+    // Control direction (PUSH/PULL, not conflated): unlike command/
+    // telemetry there's no subscription handshake, but the connection
+    // itself still needs a moment, so retry the same way.
+    {
+        bridge::ControlCommandWire clear_wire{1};
+        bool clear_received = false;
+        for (int attempt = 0; attempt < 40 && !clear_received; ++attempt) {
+            zmq_send(fake_bridge_push, &clear_wire, sizeof(clear_wire), 0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            clear_received = chassis_link.try_receive_clear_faults_request();
+        }
+        expect(clear_received, "clear-faults request was received at all");
+
+        // Nothing queued now -- must report false, not a stale replay.
+        expect(!chassis_link.try_receive_clear_faults_request(), "no new control message -> false, not a replay");
+
+        // Not conflated: sending 3 before ever reading drains to a single
+        // collapsed true, not 3 separate actions or a lost request.
+        for (int i = 0; i < 3; ++i) zmq_send(fake_bridge_push, &clear_wire, sizeof(clear_wire), 0);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        expect(chassis_link.try_receive_clear_faults_request(), "a burst of requests collapses to one true");
+        expect(!chassis_link.try_receive_clear_faults_request(), "burst fully drained after one call");
+    }
+
     zmq_close(fake_teleop_pub);
     zmq_close(fake_teleop_sub);
+    zmq_close(fake_bridge_push);
     zmq_ctx_term(ctx);
 
     if (g_failures == 0) {

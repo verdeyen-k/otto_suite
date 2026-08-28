@@ -13,8 +13,12 @@
 
 namespace bridge {
 
-constexpr int kCommandPort = 5555;    // Python -> C++: ChassisCommandWire
-constexpr int kTelemetryPort = 5556;  // C++ -> Python: ChassisTelemetryWire
+constexpr int kCommandPort = 5555;    // Python -> C++: ChassisCommandWire (PUB/SUB, conflated)
+constexpr int kTelemetryPort = 5556;  // C++ -> Python: ChassisTelemetryWire (PUB/SUB, conflated)
+constexpr int kControlPort = 5557;    // Python -> C++: ControlCommandWire (PUSH/PULL, NOT conflated --
+                                       // a one-shot request like "clear faults" must not be silently
+                                       // dropped by a newer joystick-axis update arriving first, the
+                                       // way ZMQ_CONFLATE on the command channel is designed to do.
 
 #pragma pack(push, 1)
 
@@ -22,6 +26,10 @@ struct ChassisCommandWire {
     double vx_mps;
     double vy_mps;
     double omega_rad_per_s;
+};
+
+struct ControlCommandWire {
+    std::uint8_t clear_faults;  // 1 = clear-faults request; only value currently defined
 };
 
 struct ModuleTelemetryWire {
@@ -41,6 +49,7 @@ struct ChassisTelemetryWire {
 #pragma pack(pop)
 
 static_assert(sizeof(ChassisCommandWire) == 24, "wire layout must stay packed/stable");
+static_assert(sizeof(ControlCommandWire) == 1, "wire layout must stay packed/stable");
 static_assert(sizeof(ModuleTelemetryWire) == 17, "wire layout must stay packed/stable");
 static_assert(sizeof(ChassisTelemetryWire) == 93, "wire layout must stay packed/stable");
 
