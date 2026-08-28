@@ -73,12 +73,40 @@ struct RobotConfig {
         return max_wheel_speed_rpm / 60.0 * 2.0 * M_PI * wheel_radius_m();
     }
 
-    // Added to a commanded wheel angle (0 = forward) before it's sent to
-    // the steer actuator, and subtracted back out when reading the
-    // actuator's raw position -- corrects for wherever the eRob's own zero
-    // happened to land relative to the wheel physically pointing forward.
-    // Indexed by ModuleIndex. Uncalibrated chassis: leave at 0.
+    // Raw actuator degrees when this module's wheel is physically pointing
+    // forward (wheel-frame angle 0) -- read directly off zeroerr_state (or
+    // the actuator's own telemetry) with the wheel manually set to
+    // forward, no sign change needed. Indexed by ModuleIndex. Uncalibrated
+    // chassis: leave at 0.
     std::array<double, 4> steer_angle_offset_deg{0.0, 0.0, 0.0, 0.0};
+
+    // Whether this module's steer actuator's positive raw-degree direction
+    // is physically reversed relative to the wheel-frame convention
+    // (kinematics.hpp: CCW positive, matching WPILib) -- a mounting fact,
+    // not a calibration number: symmetric swerve builds commonly need
+    // opposite sign conventions on left vs. right (or front vs. rear)
+    // modules for "increasing raw degrees" to mean the same physical
+    // rotation sense the kinematics math assumes. Translation commands
+    // (all modules at the same angle, often 0) can look correct even with
+    // this wrong; rotation is what exposes it, since it needs each module
+    // at a different, correctly-signed angle -- wheels forming an "X"
+    // instead of the expected tangential pinwheel during rotate-in-place
+    // is the signature. Indexed by ModuleIndex. Uncalibrated chassis:
+    // leave false.
+    std::array<bool, 4> steer_invert{false, false, false, false};
+
+    // wheel-frame degrees (kinematics convention) <-> raw actuator
+    // degrees, composing steer_angle_offset_deg and steer_invert.
+    // Offset is unaffected by invert: it was calibrated by reading the
+    // raw value with the wheel already at wheel-frame 0, where the
+    // invert's sign multiplier is a no-op either way.
+    double wheel_angle_to_raw_deg(std::size_t module, double wheel_angle_deg) const {
+        return steer_angle_offset_deg[module] + (steer_invert[module] ? -wheel_angle_deg : wheel_angle_deg);
+    }
+    double raw_to_wheel_angle_deg(std::size_t module, double raw_deg) const {
+        const double delta = raw_deg - steer_angle_offset_deg[module];
+        return steer_invert[module] ? -delta : delta;
+    }
 
     // Indexed by ModuleIndex. Not independently verified against
     // docs/ecatbustopo.md's physical layout notes -- those two have

@@ -123,6 +123,26 @@ int main(int argc, char **argv) {
         expect_near(max_after, cap, "desaturate caps fastest module");
     }
 
+    // wheel_angle_to_raw_deg()/raw_to_wheel_angle_deg() round-trip, both
+    // with and without steer_invert -- catches a sign-composition mistake
+    // between offset and invert without needing hardware. At wheel-frame
+    // 0 specifically, raw must equal the offset regardless of invert
+    // (that's the whole point of how the offset was calibrated).
+    {
+        robot::RobotConfig test_cfg = cfg;
+        for (std::size_t i = 0; i < test_cfg.steer_invert.size(); ++i) {
+            for (bool invert : {false, true}) {
+                test_cfg.steer_invert[i] = invert;
+                expect_near(test_cfg.wheel_angle_to_raw_deg(i, 0.0), test_cfg.steer_angle_offset_deg[i],
+                            "wheel angle 0 maps to raw offset regardless of invert");
+                for (double wheel_deg : {0.0, 30.0, -90.0, 175.0}) {
+                    const double raw = test_cfg.wheel_angle_to_raw_deg(i, wheel_deg);
+                    expect_near(test_cfg.raw_to_wheel_angle_deg(i, raw), wheel_deg, "offset/invert round-trip");
+                }
+            }
+        }
+    }
+
     // Bus locations: 4 distinct steer slaves, and 4 distinct (drive slave,
     // axis) pairs -- catches a copy-paste config mistake (e.g. two modules
     // pointed at the same steer actuator) without needing hardware.

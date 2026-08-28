@@ -512,7 +512,7 @@ int main(int argc, char **argv) {
     std::array<double, 4> last_commanded_speed_mps{0.0, 0.0, 0.0, 0.0};
     for (std::size_t j = 0; j < 4; ++j) {
         last_commanded_angle_rad[j] =
-            (steer_actuators[j].snapshot().position_deg - cfg.steer_angle_offset_deg[j]) * M_PI / 180.0;
+            cfg.raw_to_wheel_angle_deg(j, steer_actuators[j].snapshot().position_deg) * M_PI / 180.0;
     }
 
     bridge::ChassisLink chassis_link(args.command_port, args.telemetry_port);
@@ -674,8 +674,8 @@ int main(int argc, char **argv) {
             const double speed_delta = target_speed_mps - last_commanded_speed_mps[j];
             last_commanded_speed_mps[j] += clamp_magnitude(speed_delta, max_speed_step);
 
-            steer_actuators[j].set_target_angle_deg(last_commanded_angle_rad[j] * 180.0 / M_PI +
-                                                      cfg.steer_angle_offset_deg[j]);
+            steer_actuators[j].set_target_angle_deg(
+                cfg.wheel_angle_to_raw_deg(j, last_commanded_angle_rad[j] * 180.0 / M_PI));
             drive_axes[j].set_target_velocity_counts_per_s(mps_to_counts_per_s(cfg, last_commanded_speed_mps[j]));
 
             // Rising-edge fault logging: the earlier bring-up checkpoints
@@ -705,7 +705,7 @@ int main(int argc, char **argv) {
             for (std::size_t j = 0; j < 4; ++j) {
                 auto steer_s = steer_actuators[j].snapshot();
                 auto drive_s = drive_axes[j].snapshot();
-                const double wheel_angle_deg = steer_s.position_deg - cfg.steer_angle_offset_deg[j];
+                const double wheel_angle_deg = cfg.raw_to_wheel_angle_deg(j, steer_s.position_deg);
                 const double wheel_speed_mps = counts_per_s_to_mps(cfg, drive_s.velocity_actual_counts_per_s);
                 measured[j] = kinematics::ModuleState{wheel_speed_mps, wheel_angle_deg * M_PI / 180.0};
                 module_telemetry[j] = bridge::ModuleTelemetry{wheel_angle_deg, wheel_speed_mps,

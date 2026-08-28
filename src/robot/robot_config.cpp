@@ -88,6 +88,10 @@ RobotConfig load_robot_config(const std::string &path) {
     cfg.steer_angle_offset_deg[kFrontRight] = require(kv, "steer_angle_offset_deg_fr", path);
     cfg.steer_angle_offset_deg[kRearLeft] = require(kv, "steer_angle_offset_deg_rl", path);
     cfg.steer_angle_offset_deg[kRearRight] = require(kv, "steer_angle_offset_deg_rr", path);
+    cfg.steer_invert[kFrontLeft] = require(kv, "steer_invert_fl", path) != 0.0;
+    cfg.steer_invert[kFrontRight] = require(kv, "steer_invert_fr", path) != 0.0;
+    cfg.steer_invert[kRearLeft] = require(kv, "steer_invert_rl", path) != 0.0;
+    cfg.steer_invert[kRearRight] = require(kv, "steer_invert_rr", path) != 0.0;
 
     cfg.module_bus_locations[kFrontLeft] = {static_cast<int>(require(kv, "module_steer_slave_fl", path)),
                                              static_cast<int>(require(kv, "module_drive_slave_fl", path)),

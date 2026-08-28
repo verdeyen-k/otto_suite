@@ -30,6 +30,25 @@ steer_angle_offset_deg_fr: 356.86
 steer_angle_offset_deg_rl: -240.73
 steer_angle_offset_deg_rr: 11.02
 
+# Whether each module's steer actuator's positive raw-degree direction is
+# physically reversed relative to the wheel-frame convention (CCW
+# positive) -- a mounting fact, not a calibration number. Translation
+# commands (all modules at the same angle) can look correct even with
+# this wrong; rotate-in-place is what exposes it, since it needs each
+# module at a different, correctly-signed angle -- confirmed here: all 4
+# modules needed inverting after rotate-in-place formed an "X" instead of
+# a tangential pinwheel. If this ever needs re-deriving (new hardware, a
+# module swapped): compare each wheel's ACTUAL physical direction against
+# the expected tangent angle for a small +omega command at the current
+# wheelbase_width_m/wheelbase_length_m above (CCW, degrees from forward):
+# FL~127, FR~53, RL~-127, RR~-53. No need to recalibrate
+# steer_angle_offset_deg above when you flip invert -- it was read with
+# the wheel at 0, where invert is a no-op.
+steer_invert_fl: 1
+steer_invert_fr: 1
+steer_invert_rl: 1
+steer_invert_rr: 1
+
 
 ##### Drive Wheels #####
 drive_encoder_counts_per_rev: 524288

@@ -467,7 +467,7 @@ int main(int argc, char **argv) {
     std::array<double, 4> align_start_deg{};
     std::array<double, 4> align_target_deg{};
     for (std::size_t j = 0; j < 4; ++j) {
-        align_start_deg[j] = steer_actuators[j].snapshot().position_deg - cfg.steer_angle_offset_deg[j];
+        align_start_deg[j] = cfg.raw_to_wheel_angle_deg(j, steer_actuators[j].snapshot().position_deg);
         kinematics::ModuleState optimized =
             kinematics::SwerveKinematics::optimize(phase0_desired[j], align_start_deg[j] * M_PI / 180.0);
         align_target_deg[j] = optimized.angle_rad * 180.0 / M_PI;
@@ -486,7 +486,7 @@ int main(int argc, char **argv) {
                 double elapsed_s = (i - static_cast<int>(j) * stagger_cycles) * kCycleSeconds;
                 double frac = args.ramp_s > 0.0 ? std::min(1.0, elapsed_s / args.ramp_s) : 1.0;
                 double angle_deg = align_start_deg[j] + (align_target_deg[j] - align_start_deg[j]) * frac;
-                steer_actuators[j].set_target_angle_deg(angle_deg + cfg.steer_angle_offset_deg[j]);
+                steer_actuators[j].set_target_angle_deg(cfg.wheel_angle_to_raw_deg(j, angle_deg));
                 last_commanded_angle_rad[j] = angle_deg * M_PI / 180.0;
             }
         }
@@ -546,8 +546,8 @@ int main(int argc, char **argv) {
                 kinematics::SwerveKinematics::optimize(desired[j], last_commanded_angle_rad[j]);
             if (steer_active[j]) {
                 last_commanded_angle_rad[j] = optimized.angle_rad;
-                steer_actuators[j].set_target_angle_deg(optimized.angle_rad * 180.0 / M_PI +
-                                                          cfg.steer_angle_offset_deg[j]);
+                steer_actuators[j].set_target_angle_deg(
+                    cfg.wheel_angle_to_raw_deg(j, optimized.angle_rad * 180.0 / M_PI));
             }
             if (drive_active[j]) {
                 drive_axes[j].set_target_velocity_counts_per_s(mps_to_counts_per_s(cfg, optimized.speed_mps));
@@ -565,7 +565,7 @@ int main(int argc, char **argv) {
                 auto drive_s = drive_axes[j].snapshot();
                 measured[j] = kinematics::ModuleState{
                     counts_per_s_to_mps(cfg, drive_s.velocity_actual_counts_per_s),
-                    (steer_s.position_deg - cfg.steer_angle_offset_deg[j]) * M_PI / 180.0};
+                    cfg.raw_to_wheel_angle_deg(j, steer_s.position_deg) * M_PI / 180.0};
             }
             kinematics::ChassisSpeeds odom = kinematics_solver.to_chassis_speeds(measured);
             std::printf(
