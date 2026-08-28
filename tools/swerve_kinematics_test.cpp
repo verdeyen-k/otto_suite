@@ -188,15 +188,23 @@ constexpr double kCycleSeconds = kCycle.count() / 1e6;
 int cycles_for(double seconds) { return static_cast<int>(seconds / kCycleSeconds); }
 
 // Direct-drive wheel <-> Copley motor encoder conversion (robot config).
-double counts_per_s_to_mps(const robot::RobotConfig &cfg, std::int32_t counts_per_s) {
-    double motor_rev_per_s = static_cast<double>(counts_per_s) / cfg.drive_encoder_counts_per_rev;
-    double wheel_rev_per_s = motor_rev_per_s / cfg.drive_gear_ratio;
-    return wheel_rev_per_s * 2.0 * M_PI * cfg.wheel_radius_m();
-}
+// Module-agnostic overloads (no drive_invert applied) are for
+// informational conversions not tied to one module's hardware, e.g. the
+// max-speed printout below.
 std::int32_t mps_to_counts_per_s(const robot::RobotConfig &cfg, double mps) {
     double wheel_rev_per_s = mps / (2.0 * M_PI * cfg.wheel_radius_m());
     double motor_rev_per_s = wheel_rev_per_s * cfg.drive_gear_ratio;
     return static_cast<std::int32_t>(std::lround(motor_rev_per_s * cfg.drive_encoder_counts_per_rev));
+}
+double counts_per_s_to_mps(const robot::RobotConfig &cfg, std::size_t module, std::int32_t counts_per_s) {
+    double motor_rev_per_s = static_cast<double>(counts_per_s) / cfg.drive_encoder_counts_per_rev;
+    double wheel_rev_per_s = motor_rev_per_s / cfg.drive_gear_ratio;
+    double mps = wheel_rev_per_s * 2.0 * M_PI * cfg.wheel_radius_m();
+    return cfg.drive_invert[module] ? -mps : mps;
+}
+std::int32_t mps_to_counts_per_s(const robot::RobotConfig &cfg, std::size_t module, double mps) {
+    if (cfg.drive_invert[module]) mps = -mps;
+    return mps_to_counts_per_s(cfg, mps);
 }
 
 kinematics::ChassisSpeeds lerp(const kinematics::ChassisSpeeds &a, const kinematics::ChassisSpeeds &b,
@@ -550,7 +558,7 @@ int main(int argc, char **argv) {
                     cfg.wheel_angle_to_raw_deg(j, optimized.angle_rad * 180.0 / M_PI));
             }
             if (drive_active[j]) {
-                drive_axes[j].set_target_velocity_counts_per_s(mps_to_counts_per_s(cfg, optimized.speed_mps));
+                drive_axes[j].set_target_velocity_counts_per_s(mps_to_counts_per_s(cfg, j, optimized.speed_mps));
             }
         }
         master.send_receive();
@@ -564,7 +572,7 @@ int main(int argc, char **argv) {
                 auto steer_s = steer_actuators[j].snapshot();
                 auto drive_s = drive_axes[j].snapshot();
                 measured[j] = kinematics::ModuleState{
-                    counts_per_s_to_mps(cfg, drive_s.velocity_actual_counts_per_s),
+                    counts_per_s_to_mps(cfg, j, drive_s.velocity_actual_counts_per_s),
                     cfg.raw_to_wheel_angle_deg(j, steer_s.position_deg) * M_PI / 180.0};
             }
             kinematics::ChassisSpeeds odom = kinematics_solver.to_chassis_speeds(measured);

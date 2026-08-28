@@ -54,6 +54,17 @@ steer_invert_rr: 1
 drive_encoder_counts_per_rev: 524288
 drive_gear_ratio: 1.0
 
+# Whether each module's drive actuator's positive raw-velocity direction is
+# physically reversed relative to the wheel-frame convention (positive =
+# forward) -- a mounting fact, not a calibration number, same reasoning as
+# steer_invert above. Drive a module forward at low speed and compare
+# against the commanded sign; flip here (not drive_gear_ratio or wiring)
+# if a module runs backward relative to what was commanded.
+drive_invert_fl: 0
+drive_invert_fr: 1
+drive_invert_rl: 1
+drive_invert_rr: 0
+
 # Hard ceiling on any single drive wheel's own rotational speed from datasheet.
 # Robot speeds are derated to keep the robot below this
 max_wheel_speed_rpm: 160

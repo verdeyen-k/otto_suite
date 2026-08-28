@@ -52,6 +52,14 @@ struct RobotConfig {
     int drive_encoder_counts_per_rev;
     double drive_gear_ratio;  // motor revolutions per wheel revolution
 
+    // Whether this module's drive actuator's positive raw-velocity
+    // direction is physically reversed relative to the wheel-frame
+    // convention (positive = forward) -- a mounting fact, not a
+    // calibration number, same reasoning as steer_invert below. Applied by
+    // whichever code converts between wheel_mps and raw drive counts/s.
+    // Indexed by ModuleIndex. Uncalibrated chassis: leave false.
+    std::array<bool, 4> drive_invert{false, false, false, false};
+
     double max_speed_mps;
     double max_omega_deg_s;
     double max_steer_rate_deg_s;

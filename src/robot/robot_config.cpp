@@ -78,6 +78,10 @@ RobotConfig load_robot_config(const std::string &path) {
     cfg.wheel_diameter_m = require(kv, "wheel_diameter_m", path);
     cfg.drive_encoder_counts_per_rev = static_cast<int>(require(kv, "drive_encoder_counts_per_rev", path));
     cfg.drive_gear_ratio = require(kv, "drive_gear_ratio", path);
+    cfg.drive_invert[kFrontLeft] = require(kv, "drive_invert_fl", path) != 0.0;
+    cfg.drive_invert[kFrontRight] = require(kv, "drive_invert_fr", path) != 0.0;
+    cfg.drive_invert[kRearLeft] = require(kv, "drive_invert_rl", path) != 0.0;
+    cfg.drive_invert[kRearRight] = require(kv, "drive_invert_rr", path) != 0.0;
     cfg.max_speed_mps = require(kv, "max_speed_mps", path);
     cfg.max_omega_deg_s = require(kv, "max_omega_deg_s", path);
     cfg.max_steer_rate_deg_s = require(kv, "max_steer_rate_deg_s", path);

@@ -224,12 +224,14 @@ constexpr double kCycleSeconds = kCycle.count() / 1e6;
 
 int cycles_for(double seconds) { return static_cast<int>(seconds / kCycleSeconds); }
 
-double counts_per_s_to_mps(const robot::RobotConfig &cfg, std::int32_t counts_per_s) {
+double counts_per_s_to_mps(const robot::RobotConfig &cfg, std::size_t module, std::int32_t counts_per_s) {
     double motor_rev_per_s = static_cast<double>(counts_per_s) / cfg.drive_encoder_counts_per_rev;
     double wheel_rev_per_s = motor_rev_per_s / cfg.drive_gear_ratio;
-    return wheel_rev_per_s * 2.0 * M_PI * cfg.wheel_radius_m();
+    double mps = wheel_rev_per_s * 2.0 * M_PI * cfg.wheel_radius_m();
+    return cfg.drive_invert[module] ? -mps : mps;
 }
-std::int32_t mps_to_counts_per_s(const robot::RobotConfig &cfg, double mps) {
+std::int32_t mps_to_counts_per_s(const robot::RobotConfig &cfg, std::size_t module, double mps) {
+    if (cfg.drive_invert[module]) mps = -mps;
     double wheel_rev_per_s = mps / (2.0 * M_PI * cfg.wheel_radius_m());
     double motor_rev_per_s = wheel_rev_per_s * cfg.drive_gear_ratio;
     return static_cast<std::int32_t>(std::lround(motor_rev_per_s * cfg.drive_encoder_counts_per_rev));
@@ -743,7 +745,7 @@ int main(int argc, char **argv) {
 
             steer_actuators[j].set_target_angle_deg(
                 cfg.wheel_angle_to_raw_deg(j, last_commanded_angle_rad[j] * 180.0 / M_PI));
-            drive_axes[j].set_target_velocity_counts_per_s(mps_to_counts_per_s(cfg, last_commanded_speed_mps[j]));
+            drive_axes[j].set_target_velocity_counts_per_s(mps_to_counts_per_s(cfg, j, last_commanded_speed_mps[j]));
 
             // Rising-edge fault logging: the earlier bring-up checkpoints
             // print error codes, but this live loop's periodic re-arm
@@ -773,7 +775,7 @@ int main(int argc, char **argv) {
                 auto steer_s = steer_actuators[j].snapshot();
                 auto drive_s = drive_axes[j].snapshot();
                 const double wheel_angle_deg = cfg.raw_to_wheel_angle_deg(j, steer_s.position_deg);
-                const double wheel_speed_mps = counts_per_s_to_mps(cfg, drive_s.velocity_actual_counts_per_s);
+                const double wheel_speed_mps = counts_per_s_to_mps(cfg, j, drive_s.velocity_actual_counts_per_s);
                 measured[j] = kinematics::ModuleState{wheel_speed_mps, wheel_angle_deg * M_PI / 180.0};
                 module_telemetry[j] = bridge::ModuleTelemetry{wheel_angle_deg, wheel_speed_mps,
                                                                 steer_s.has_fault || drive_s.has_fault};
