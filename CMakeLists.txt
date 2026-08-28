@@ -60,6 +60,9 @@ target_link_libraries(copley_state PRIVATE copley)
 add_executable(full_shake tools/full_shake.cpp)
 target_link_libraries(full_shake PRIVATE zeroerr copley)
 
+add_executable(bus_voltage tools/bus_voltage.cpp)
+target_link_libraries(bus_voltage PRIVATE zeroerr copley)
+
 add_library(robot
   src/robot/robot_config.cpp
 )
