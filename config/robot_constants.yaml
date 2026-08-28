@@ -25,10 +25,10 @@ max_accel_mps2: 1
 max_steer_accel_deg_s2: 600.0
 # angular velocity -- 600 deg/s^2 matches reaching the default 180 deg/s
 max_steer_rate_deg_s: 180.0
-steer_angle_offset_deg_fl: 356.80
-steer_angle_offset_deg_fr: 119.88
-steer_angle_offset_deg_rl: 539.87
-steer_angle_offset_deg_rr: 11.09
+steer_angle_offset_deg_fl: 539.47
+steer_angle_offset_deg_fr: 356.86
+steer_angle_offset_deg_rl: -240.73
+steer_angle_offset_deg_rr: 11.02
 
 
 ##### Drive Wheels #####
@@ -48,13 +48,13 @@ max_wheel_speed_rpm: 160
 # tool's own scan output) rather than trusting either document blindly.
 # teleop/swerve_kinematics_test's --fl/--fr/--rl/--rr flags override these
 # per-run without editing this file.
-module_steer_slave_fl: 5
+module_steer_slave_fl: 8
 module_drive_slave_fl: 2
 module_drive_axis_fl: b
-module_steer_slave_fr: 7
+module_steer_slave_fr: 5
 module_drive_slave_fr: 2
 module_drive_axis_fr: a
-module_steer_slave_rl: 8
+module_steer_slave_rl: 7
 module_drive_slave_rl: 3
 module_drive_axis_rl: b
 module_steer_slave_rr: 9
