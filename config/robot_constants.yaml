@@ -81,12 +81,12 @@ max_wheel_speed_rpm: 160
 module_steer_slave_fl: 8
 module_drive_slave_fl: 2
 module_drive_axis_fl: b
-module_steer_slave_fr: 5
+module_steer_slave_fr: 9
 module_drive_slave_fr: 3
 module_drive_axis_fr: b
-module_steer_slave_rl: 7
+module_steer_slave_rl: 6
 module_drive_slave_rl: 2
 module_drive_axis_rl: a
-module_steer_slave_rr: 9
+module_steer_slave_rr: 5
 module_drive_slave_rr: 3
 module_drive_axis_rr: a
