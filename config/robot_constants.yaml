@@ -61,8 +61,8 @@ drive_gear_ratio: 1.0
 # against the commanded sign; flip here (not drive_gear_ratio or wiring)
 # if a module runs backward relative to what was commanded.
 drive_invert_fl: 0
-drive_invert_fr: 1
-drive_invert_rl: 1
+drive_invert_fr: 0
+drive_invert_rl: 0
 drive_invert_rr: 0
 
 # Hard ceiling on any single drive wheel's own rotational speed from datasheet.
@@ -82,11 +82,11 @@ module_steer_slave_fl: 8
 module_drive_slave_fl: 2
 module_drive_axis_fl: b
 module_steer_slave_fr: 5
-module_drive_slave_fr: 2
-module_drive_axis_fr: a
+module_drive_slave_fr: 3
+module_drive_axis_fr: b
 module_steer_slave_rl: 7
-module_drive_slave_rl: 3
-module_drive_axis_rl: b
+module_drive_slave_rl: 2
+module_drive_axis_rl: a
 module_steer_slave_rr: 9
 module_drive_slave_rr: 3
 module_drive_axis_rr: a
