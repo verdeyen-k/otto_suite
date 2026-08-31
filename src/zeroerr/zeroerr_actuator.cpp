@@ -173,8 +173,12 @@ void ZeroErrActuator::update() {
         // into the new target using Profile Acceleration/Deceleration
         // instead of decelerating to a stop at the old one first (manual
         // Table 5-9/Fig. 5-4 vs 5-5, p.58-60) -- what continuous steering
-        // tracking needs.
-        controlword |= kControlwordBitChangeSetImmediately;
+        // tracking needs. See set_change_set_immediately()'s comment for
+        // why this is conditional, not unconditional as the manual's
+        // demonstrated use case alone would suggest.
+        if (change_set_immediately_) {
+            controlword |= kControlwordBitChangeSetImmediately;
+        }
         const bool ack = (last_statusword_ & kStatuswordBitSetpointAck) != 0;
 
         if (awaiting_ack_clear_) {

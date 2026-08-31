@@ -102,6 +102,21 @@ public:
     // cycle -- see update()'s controlword bit4/bit5 handling).
     void set_target_angle_deg(double target_deg);
 
+    // Diagnostic escape hatch: the manual only demonstrates controlword
+    // bit5 ("Change Set Immediately") being used to retarget a move
+    // that's already in progress (Fig. 5-4/5-5, p.59-60) -- it's
+    // untested, by the manual and by this code, what a fresh retarget
+    // from an already-settled/idle state does with bit5 held high. Real
+    // hardware has shown a pattern consistent with that combination
+    // sometimes not actually starting the move at all (clean bit4/ack
+    // handshake every time, zero corrective torque, position frozen for
+    // seconds) despite ruling out hardware, Control Source, and STO.
+    // Setting this false sends bit5=0 instead, falling back to the
+    // manual's plainly-demonstrated behavior (stop at the current target
+    // before starting the next move) to test whether that's the
+    // trigger. Defaults to true (existing behavior).
+    void set_change_set_immediately(bool enabled) { change_set_immediately_ = enabled; }
+
     // Reads statusword/feedback from the bus, advances the CiA402 state
     // machine, and writes controlword + holding-brake bit. Must be called
     // once per PDO cycle, before set_target_angle_deg()/snapshot() for
@@ -142,6 +157,7 @@ private:
     bool awaiting_ack_ = false;
     bool awaiting_ack_clear_ = false;
     int ack_wait_cycles_ = 0;
+    bool change_set_immediately_ = true;
 
     std::uint16_t last_statusword_ = 0;
     std::uint16_t last_controlword_ = 0;

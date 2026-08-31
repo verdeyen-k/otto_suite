@@ -107,6 +107,7 @@ struct Args {
     double stagger_ms = 100.0;
     std::string config_path = robot::kDefaultConfigPath;
     std::string log_csv_path;
+    bool pp_no_immediate = false;
 };
 
 [[noreturn]] void usage_and_exit(const char *prog) {
@@ -116,13 +117,16 @@ struct Args {
                  "         [--max-speed-mps 0.15] [--max-omega-deg-s 30]\n"
                  "         [--max-steer-rate-deg-s 180] [--max-steer-accel-deg-s2 600] [--max-accel-mps2 0.3]\n"
                  "         [--max-wheel-speed-rpm 57] [--hold-ms 150] [--disable-ms 1000] [--stagger-ms 100]\n"
-                 "         [--config config/robot_constants.yaml] [--log-csv PATH]\n"
+                 "         [--config config/robot_constants.yaml] [--log-csv PATH] [--no-immediate]\n"
                  "  max-speed-mps/max-omega-deg-s/max-steer-rate-deg-s/max-steer-accel-deg-s2/max-accel-mps2/\n"
                  "  max-wheel-speed-rpm/--fl/--fr/--rl/--rr all default to the robot config file's values;\n"
                  "  pass a flag to override it for one run (e.g. after a re-scan shows different slaves).\n"
                  "  --log-csv: write one row per 5ms cycle (chassis command, per-module commanded vs.\n"
                  "  actual raw steer angle, controlword bit4/statusword bit12, torque/velocity feedback)\n"
-                 "  for offline comparison of joystick input against actual actuator response.\n",
+                 "  for offline comparison of joystick input against actual actuator response.\n"
+                 "  --no-immediate: diagnostic -- steer retargets stop at the current target before\n"
+                 "  starting the next move, instead of blending (Change Set Immediately). See\n"
+                 "  ZeroErrActuator::set_change_set_immediately()'s comment.\n",
                  prog);
     std::exit(2);
 }
@@ -218,6 +222,8 @@ Args parse_args(int argc, char **argv) {
             args.config_path = next();
         } else if (arg == "--log-csv") {
             args.log_csv_path = next();
+        } else if (arg == "--no-immediate") {
+            args.pp_no_immediate = true;
         } else {
             usage_and_exit(argv[0]);
         }
@@ -343,6 +349,12 @@ int main(int argc, char **argv) {
     for (const auto &t : args.modules) {
         steer_actuators.emplace_back(master, t.steer_slave);
         drive_axes.emplace_back(master, t.drive_slave, t.drive_axis);
+    }
+    if (args.pp_no_immediate) {
+        std::printf("--no-immediate: steer moves will stop at the current target before starting the next one "
+                    "(no Change Set Immediately), instead of blending -- diagnostic build, see "
+                    "set_change_set_immediately()'s comment.\n");
+        for (auto &a : steer_actuators) a.set_change_set_immediately(false);
     }
 
     auto update_all = [&]() {
