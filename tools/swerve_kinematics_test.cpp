@@ -83,6 +83,7 @@ struct Args {
     double ramp_s = 1.0;
     double stagger_ms = 100.0;
     std::string config_path = robot::kDefaultConfigPath;
+    bool no_drive = false;
 };
 
 [[noreturn]] void usage_and_exit(const char *prog) {
@@ -90,11 +91,14 @@ struct Args {
                  "Usage: %s --iface IFNAME --fl steer=N,drive=M,axis={a|b} --fr ... --rl ... --rr ...\n"
                  "         [--max-speed-mps 0.15] [--max-omega-deg-s 30]\n"
                  "         [--phase-duration-s 4] [--ramp-s 1] [--stagger-ms 100]\n"
-                 "         [--config config/robot_constants.yaml]\n"
+                 "         [--config config/robot_constants.yaml] [--no-drive]\n"
                  "  --fl/--fr/--rl/--rr default to the robot config file's bus locations; pass a\n"
                  "  flag to override one for this run.\n"
                  "  Runs forward -> strafe -> rotate -> diagonal -> stop, each ramped in\n"
-                 "  and held for phase-duration-s.\n",
+                 "  and held for phase-duration-s.\n"
+                 "  --no-drive: never enable the drive axes (steering only) -- they stay in\n"
+                 "  SWITCH_ON_DISABLED the whole run, so no drive torque is ever possible\n"
+                 "  regardless of what a commanded speed would otherwise be.\n",
                  prog);
     std::exit(2);
 }
@@ -174,6 +178,8 @@ Args parse_args(int argc, char **argv) {
             args.stagger_ms = std::atof(next().c_str());
         } else if (arg == "--config") {
             args.config_path = next();
+        } else if (arg == "--no-drive") {
+            args.no_drive = true;
         } else {
             usage_and_exit(argv[0]);
         }
@@ -399,7 +405,11 @@ int main(int argc, char **argv) {
 
     // Combined stagger across all 8 (steer then drive, per module in
     // FL/FR/RL/RR order) -- same current-inrush fix as full_shake.cpp.
-    constexpr std::size_t kTotalActuators = 8;
+    // --no-drive shrinks this to just the 4 steer actuators, so
+    // enable_nth()/nth_operational() below never touch drive_axes at all
+    // (n never reaches the drive index range) -- they're left in
+    // SWITCH_ON_DISABLED for the whole run, not merely commanded zero.
+    const std::size_t kTotalActuators = args.no_drive ? steer_actuators.size() : steer_actuators.size() + drive_axes.size();
     const int stagger_cycles = std::max(0, static_cast<int>(args.stagger_ms / 1000.0 / kCycleSeconds));
     auto enable_nth = [&](std::size_t n) {
         if (n < steer_actuators.size()) {
