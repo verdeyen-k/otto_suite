@@ -46,6 +46,15 @@ constexpr std::uint16_t kProfileAccelerationIndex = 0x6083;  // plus/s^2, UDINT
 constexpr std::uint16_t kProfileDecelerationIndex = 0x6084;  // plus/s^2, UDINT
 constexpr std::uint16_t kControlwordBitNewSetpoint = 1u << 4;
 constexpr std::uint16_t kControlwordBitChangeSetImmediately = 1u << 5;
+// Statusword bit12, "Set-point acknowledge" (manual Table 5-10, p.60):
+// "1 = Accept a new set-point acknowledge and start generating target
+// again." The host must see this go high before it's safe to drop bit4,
+// and see it go low again before it's safe to raise bit4 for another
+// target -- raising it early is a rising edge sent before the drive has
+// finished processing the previous one, which it silently ignores rather
+// than reporting an error, confirmed on real hardware as steering
+// updates that intermittently just don't take effect.
+constexpr std::uint16_t kStatuswordBitSetpointAck = 1u << 12;
 
 // Byte offsets for the extended PDO mapping this driver configures via SDO
 // at connect time (see configure_zeroerr_pdos), rather than relying on the

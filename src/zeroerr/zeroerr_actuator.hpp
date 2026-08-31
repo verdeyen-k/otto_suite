@@ -119,15 +119,29 @@ private:
     // the latest requested target, in encoder counts; triggered_ is the
     // target of the last move actually kicked off with a controlword bit4
     // rising edge (nullopt until the first one). bit4_high_ mirrors what
-    // was last written to controlword bit4; needs_falling_edge_first_
-    // means a retarget was requested while bit4_high_ was already true, so
-    // this cycle must drop it to 0 before the next cycle can raise it
-    // again (bit4 is rising-edge triggered -- see kControlwordBitNewSetpoint's
-    // comment in zeroerr_identity.hpp).
+    // was last written to controlword bit4.
+    //
+    // Retargeting is gated on the drive's own Set-point Acknowledge
+    // (statusword bit12), not just a fixed cycle count: raising bit4
+    // again before the drive has acknowledged the previous one is a new
+    // rising edge sent while it's still mid-handshake for the last one,
+    // which a real eRob simply ignores rather than faulting on --
+    // confirmed on real hardware as silently-dropped steering updates
+    // (affecting whichever module's timing happened to race it, not a
+    // fixed module), not a fault of any kind. awaiting_ack_ is true from
+    // the moment bit4 is raised until the drive's ack bit is seen high;
+    // awaiting_ack_clear_ is true after bit4 is dropped in response,
+    // until the drive's ack bit is seen low again -- only then is it
+    // safe to raise bit4 for a genuinely new target. ack_wait_cycles_ is
+    // a generous timeout (update() calls) on either wait, so a drive that
+    // never acknowledges (or never clears) doesn't freeze this actuator's
+    // steering forever.
     std::optional<std::int32_t> pending_target_counts_;
     std::optional<std::int32_t> triggered_target_counts_;
     bool bit4_high_ = false;
-    bool needs_falling_edge_first_ = false;
+    bool awaiting_ack_ = false;
+    bool awaiting_ack_clear_ = false;
+    int ack_wait_cycles_ = 0;
 
     std::uint16_t last_statusword_ = 0;
     std::uint16_t last_controlword_ = 0;

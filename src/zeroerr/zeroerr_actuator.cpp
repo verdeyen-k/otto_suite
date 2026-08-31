@@ -12,6 +12,16 @@ namespace {
 
 constexpr double kDegPerRev = 360.0;
 
+// Generous upper bound (in update() calls, i.e. PDO cycles -- this class
+// doesn't know the caller's actual cycle period) on waiting for the
+// drive's Set-point Acknowledge to rise or clear. The manual's own timing
+// diagrams (Fig. 5-4/5-5) show it arriving essentially immediately after
+// the rising edge, so this should never actually bind in practice; it
+// exists only so a drive that never acknowledges (or never clears)
+// doesn't freeze this actuator's steering forever -- at a typical 5ms
+// cycle this is roughly 1 second.
+constexpr int kAckTimeoutCycles = 200;
+
 template <typename T>
 void write_field(ethercat::SoemMaster &master, int slave_index, int offset, T value) {
     master.write_output_bytes(slave_index, offset, reinterpret_cast<const std::uint8_t *>(&value), sizeof(T));
@@ -153,7 +163,9 @@ void ZeroErrActuator::update() {
         // (bit4/bit5 are meaningless outside OPERATION_ENABLED anyway --
         // fsm_'s own bits fully own the controlword here).
         bit4_high_ = false;
-        needs_falling_edge_first_ = false;
+        awaiting_ack_ = false;
+        awaiting_ack_clear_ = false;
+        ack_wait_cycles_ = 0;
         triggered_target_counts_.reset();
     } else if (pending_target_counts_.has_value()) {
         target_counts_to_write = *pending_target_counts_;
@@ -161,28 +173,40 @@ void ZeroErrActuator::update() {
         // into the new target using Profile Acceleration/Deceleration
         // instead of decelerating to a stop at the old one first (manual
         // Table 5-9/Fig. 5-4 vs 5-5, p.58-60) -- what continuous steering
-        // tracking needs. New Set-point must still see an actual 0 -> 1
-        // edge for every retarget, even with Change Set Immediately held
-        // high (manual p.57: "the command is rising-edge triggered").
+        // tracking needs.
         controlword |= kControlwordBitChangeSetImmediately;
-        if (needs_falling_edge_first_) {
-            controlword |= kControlwordBitNewSetpoint;
-            bit4_high_ = true;
-            needs_falling_edge_first_ = false;
-            triggered_target_counts_ = pending_target_counts_;
-        } else if (triggered_target_counts_ != pending_target_counts_) {
-            if (bit4_high_) {
-                // Already high from the previous move -- must drop to 0
-                // this cycle so next cycle's rise is a real edge.
-                bit4_high_ = false;
-                needs_falling_edge_first_ = true;
-            } else {
-                controlword |= kControlwordBitNewSetpoint;
-                bit4_high_ = true;
-                triggered_target_counts_ = pending_target_counts_;
+        const bool ack = (last_statusword_ & kStatuswordBitSetpointAck) != 0;
+
+        if (awaiting_ack_clear_) {
+            // bit4 already dropped; wait for the drive's own acknowledge
+            // bit to clear before it's safe to raise bit4 again for a new
+            // target -- see the field comment in the header for why this
+            // matters (skipping it is what silently dropped updates).
+            if (!ack || ++ack_wait_cycles_ > kAckTimeoutCycles) {
+                awaiting_ack_clear_ = false;
             }
-        } else if (bit4_high_) {
-            controlword |= kControlwordBitNewSetpoint;  // hold at its current level
+        } else if (awaiting_ack_) {
+            // bit4 held high; wait for the drive to acknowledge this
+            // target before touching bit4 again.
+            if (ack) {
+                bit4_high_ = false;
+                awaiting_ack_ = false;
+                awaiting_ack_clear_ = true;
+                ack_wait_cycles_ = 0;
+                triggered_target_counts_ = pending_target_counts_;
+            } else if (++ack_wait_cycles_ > kAckTimeoutCycles) {
+                bit4_high_ = false;
+                awaiting_ack_ = false;
+                ack_wait_cycles_ = 0;
+            }
+        } else if (triggered_target_counts_ != pending_target_counts_) {
+            bit4_high_ = true;
+            awaiting_ack_ = true;
+            ack_wait_cycles_ = 0;
+        }
+
+        if (bit4_high_) {
+            controlword |= kControlwordBitNewSetpoint;
         }
     }
 
