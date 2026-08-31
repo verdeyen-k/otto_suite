@@ -121,8 +121,8 @@ struct Args {
                  "  max-wheel-speed-rpm/--fl/--fr/--rl/--rr all default to the robot config file's values;\n"
                  "  pass a flag to override it for one run (e.g. after a re-scan shows different slaves).\n"
                  "  --log-csv: write one row per 5ms cycle (chassis command, per-module commanded vs.\n"
-                 "  actual raw steer angle, controlword bit4/statusword bit12) for offline comparison of\n"
-                 "  joystick input against actual actuator response.\n",
+                 "  actual raw steer angle, controlword bit4/statusword bit12, torque/velocity feedback)\n"
+                 "  for offline comparison of joystick input against actual actuator response.\n",
                  prog);
     std::exit(2);
 }
@@ -584,7 +584,12 @@ int main(int argc, char **argv) {
         }
         log_csv << "t_ms,vx_cmd,vy_cmd,w_cmd";
         for (const char *m : kModuleNames) {
-            log_csv << ',' << m << "_target_deg," << m << "_actual_deg," << m << "_bit4," << m << "_ack";
+            // effort_raw/velocity_actual distinguish "not moving because
+            // the drive isn't trying" (near-zero torque despite an
+            // accepted move) from "not moving despite trying" (torque
+            // saturated, position still frozen -- mechanically stuck).
+            log_csv << ',' << m << "_target_deg," << m << "_actual_deg," << m << "_bit4," << m << "_ack," << m
+                     << "_effort_raw," << m << "_velocity_actual";
         }
         log_csv << '\n';
     }
@@ -820,7 +825,8 @@ int main(int argc, char **argv) {
                 auto s = steer_actuators[j].snapshot();
                 log_csv << ',' << commanded_raw_deg[j] << ',' << s.position_deg << ','
                         << ((s.controlword_raw & kBitNewSetpoint) != 0) << ','
-                        << ((s.statusword_raw & kBitSetpointAck) != 0);
+                        << ((s.statusword_raw & kBitSetpointAck) != 0) << ',' << s.effort_actual_raw << ','
+                        << s.velocity_actual_counts_per_s;
             }
             log_csv << '\n';
         }
