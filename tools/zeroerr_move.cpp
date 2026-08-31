@@ -18,6 +18,7 @@
 
 #include "cia402/state_machine.hpp"
 #include "ethercat/soem_master.hpp"
+#include "zeroerr/steer_position_controller.hpp"
 #include "zeroerr/zeroerr_actuator.hpp"
 #include "zeroerr/zeroerr_identity.hpp"
 
@@ -241,18 +242,26 @@ int main(int argc, char **argv) {
 
     const double start_deg = actuator.snapshot().position_deg;
     const double target_deg = args.angle_deg;
-    std::printf("Commanding move %.2f -> %.2f deg (ramping over %.2fs, holding %.2fs total)...\n", start_deg,
-                target_deg, args.ramp_s, args.duration_s);
+    // CSV (velocity) mode with the position loop closed here -- see
+    // zeroerr/steer_position_controller.hpp -- rather than the CSP/Profile
+    // Position modes this tool previously streamed a hand-ramped target
+    // to. max_rate/max_accel are derived from --ramp-s so the move still
+    // takes roughly that long, now via a real accel-limited P loop instead
+    // of a fixed-shape linear ramp.
+    const double ramp_s = std::max(args.ramp_s, 0.05);
+    const double max_rate_deg_s = std::max(std::abs(target_deg - start_deg) / ramp_s, 1.0);
+    const double max_accel_deg_s2 = max_rate_deg_s / ramp_s;
+    zeroerr::SteerPositionController controller(max_rate_deg_s * M_PI / 180.0, max_accel_deg_s2 * M_PI / 180.0);
+    std::printf("Commanding move %.2f -> %.2f deg (max_rate=%.1fdeg/s over ~%.2fs, holding %.2fs total)...\n",
+                start_deg, target_deg, max_rate_deg_s, args.ramp_s, args.duration_s);
 
     const int total_cycles = cycles_for(args.duration_s);
     next_wake = std::chrono::steady_clock::now();
     for (int i = 0; i < total_cycles && !g_stop.load(); ++i) {
-        double elapsed_s = i * kCycleSeconds;
-        double fraction = args.ramp_s > 0.0 ? std::min(1.0, elapsed_s / args.ramp_s) : 1.0;
-        double command_deg = start_deg + (target_deg - start_deg) * fraction;
-
         actuator.update();
-        actuator.set_target_angle_deg(command_deg);
+        const double actual_rad = actuator.snapshot().position_deg * M_PI / 180.0;
+        const double velocity_rad_s = controller.update(target_deg * M_PI / 180.0, actual_rad, kCycleSeconds);
+        actuator.set_target_velocity_counts_per_s(zeroerr::deg_to_counts(velocity_rad_s * 180.0 / M_PI));
         master.send_receive();
 
         // One line per 5ms cycle would flood the terminal (2000+ lines for
@@ -262,12 +271,14 @@ int main(int argc, char **argv) {
         if (i != 0) {
             std::printf("\033[1A");
         }
-        std::printf("  cmd=%7.2f pos=%7.2f vel=%7.2f deg/s fault=%s\033[K\n", command_deg, s.position_deg,
-                    s.velocity_deg_per_s, s.has_fault ? (s.sto_active ? "STO_ACTIVE" : "FAULT") : "-");
+        std::printf("  cmd_vel=%7.2f pos=%7.2f vel=%7.2f deg/s fault=%s\033[K\n",
+                    velocity_rad_s * 180.0 / M_PI, s.position_deg, s.velocity_deg_per_s,
+                    s.has_fault ? (s.sto_active ? "STO_ACTIVE" : "FAULT") : "-");
         std::fflush(stdout);
         next_wake += kCycle;
         std::this_thread::sleep_until(next_wake);
     }
+    actuator.set_target_velocity_counts_per_s(0);
 
     std::printf("Disabling and closing bus.\n");
     actuator.disable();

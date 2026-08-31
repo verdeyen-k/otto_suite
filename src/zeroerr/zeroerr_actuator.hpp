@@ -16,6 +16,7 @@ struct StateSnapshot {
     std::uint32_t digital_inputs_raw;   // what the slave last reported
     std::int32_t position_counts;
     double position_deg;
+    std::int32_t commanded_velocity_counts_per_s;  // what we last wrote (0 unless actively enabling)
     std::int32_t velocity_actual_counts_per_s;
     double velocity_deg_per_s;
     std::int16_t effort_actual_raw;
@@ -33,28 +34,33 @@ double counts_to_deg(std::int32_t counts);
 std::int32_t deg_to_counts(double deg);
 
 // Registers the ZeroErr eRob's config_func (extended PDO mapping on
-// 0x1600/0x1A00 + SM2/SM3 assignment + Modes of Operation := Profile
-// Position) on `master` for `slave_index`. Call after master.scan(),
-// before master.configure_pdos(). profile_velocity_deg_s/
-// profile_accel_deg_s2/profile_decel_deg_s2 are the drive's own on-board
-// trajectory-shaping limits (0x6081/0x6083/0x6084), written once via SDO;
-// the defaults match this robot's steering config defaults (see
-// config/robot_constants.yaml's max_steer_rate_deg_s/
-// max_steer_accel_deg_s2) so tools that don't move a steering actuator in
-// anger (zeroerr_state, zeroerr_move, ...) don't need to pass real values.
-void configure_zeroerr_pdos(ethercat::SoemMaster &master, int slave_index, double profile_velocity_deg_s = 180.0,
-                             double profile_accel_deg_s2 = 600.0, double profile_decel_deg_s2 = 600.0);
+// 0x1600/0x1A00 + SM2/SM3 assignment + Modes of Operation := Cyclic
+// Synchronous Velocity) on `master` for `slave_index`. Call after
+// master.scan(), before master.configure_pdos().
+void configure_zeroerr_pdos(ethercat::SoemMaster &master, int slave_index);
 
-// One ZeroErr eRob axis, CiA 402 Profile Position (PP) mode.
+// One ZeroErr eRob axis, CiA 402 Cyclic Synchronous Velocity (CSV) mode.
 //
-// Chosen over Cyclic Synchronous Position (CSP) because CSP has no
-// feedforward path this driver can reach -- the manual's CSP object set
-// (Table 5-8) doesn't include a feedforward object at all, and streaming
-// raw position setpoints with none produced severely underdamped/
-// oscillating tracking on real hardware. PP mode instead has the DRIVE
-// run its own on-board trajectory profiler (the same one the vendor's
-// eTuner tooling exercises, which tracks cleanly) between host-supplied
-// target updates -- see set_target_angle_deg().
+// Previously ran Profile Position (PP) mode, letting the drive's own
+// on-board trajectory profiler handle the steering position loop
+// (chosen over Cyclic Synchronous Position after CSP's lack of a
+// feedforward path produced underdamped/oscillating tracking). PP mode
+// itself turned out to have a real-hardware failure mode that resisted
+// diagnosis: the CiA-402 New Set-point/Set-point Acknowledge handshake
+// would complete cleanly -- controlword bit4 raised, statusword bit12
+// acknowledged within milliseconds, every time -- while the drive
+// applied zero corrective torque and the physical position stayed
+// frozen for seconds at a stretch, with no fault raised. Hardware,
+// wiring, Control Source, a holding brake, dropped/corrupted EtherCAT
+// frames (working counter stayed at expected_wkc() throughout), DC sync
+// health, and Change Set Immediately were all ruled out in turn.
+//
+// CSV mode sidesteps the whole PP handshake and its opaque internal
+// trajectory generator: the position loop is closed here, on the host
+// (see the P-controller in teleop.cpp/swerve_kinematics_test.cpp), and
+// this class just streams a target velocity every cycle -- the same
+// well-tested pattern already used for the drive/wheel axes (see
+// copley::CopleyAxis), which never showed any version of this problem.
 //
 // The eRob has a holding brake controlled via the digital-outputs word
 // (0x60FE) bit 0 (0=engaged, 1=released, per the CANopen/EtherCAT manual
@@ -63,7 +69,10 @@ void configure_zeroerr_pdos(ethercat::SoemMaster &master, int slave_index, doubl
 // it -- it does so proactively as soon as enable is requested (via
 // StateMachine::wants_enable(), not only once OPERATION_ENABLED is
 // confirmed), and re-engages whenever enable is not being requested
-// (fail-safe holding).
+// (fail-safe holding). Target velocity is likewise forced to zero
+// whenever not actively enabling/enabled (same reasoning as CopleyAxis),
+// so a stale nonzero command from a previous run can never be re-applied
+// by accident on a later enable.
 class ZeroErrActuator {
 public:
     ZeroErrActuator(ethercat::SoemMaster &master, int slave_index);
@@ -95,31 +104,14 @@ public:
     [[nodiscard]] std::optional<std::uint16_t> read_sm_event_missed(bool outputs) const;
     [[nodiscard]] std::optional<bool> read_sync_error(bool outputs) const;
 
-    // target_deg is an absolute target angle in degrees. Recorded as the
-    // latest desired target; update() decides whether/when to actually
-    // trigger a new Profile Position move (a target that hasn't changed
-    // since the last triggered move is just held, not re-triggered every
-    // cycle -- see update()'s controlword bit4/bit5 handling).
-    void set_target_angle_deg(double target_deg);
-
-    // Diagnostic escape hatch: the manual only demonstrates controlword
-    // bit5 ("Change Set Immediately") being used to retarget a move
-    // that's already in progress (Fig. 5-4/5-5, p.59-60) -- it's
-    // untested, by the manual and by this code, what a fresh retarget
-    // from an already-settled/idle state does with bit5 held high. Real
-    // hardware has shown a pattern consistent with that combination
-    // sometimes not actually starting the move at all (clean bit4/ack
-    // handshake every time, zero corrective torque, position frozen for
-    // seconds) despite ruling out hardware, Control Source, and STO.
-    // Setting this false sends bit5=0 instead, falling back to the
-    // manual's plainly-demonstrated behavior (stop at the current target
-    // before starting the next move) to test whether that's the
-    // trigger. Defaults to true (existing behavior).
-    void set_change_set_immediately(bool enabled) { change_set_immediately_ = enabled; }
+    void set_target_velocity_counts_per_s(std::int32_t counts_per_s) {
+        commanded_velocity_counts_per_s_ = counts_per_s;
+    }
 
     // Reads statusword/feedback from the bus, advances the CiA402 state
-    // machine, and writes controlword + holding-brake bit. Must be called
-    // once per PDO cycle, before set_target_angle_deg()/snapshot() for
+    // machine, and writes controlword + target velocity (zeroed unless
+    // actively enabling) + holding-brake bit. Must be called once per PDO
+    // cycle, before set_target_velocity_counts_per_s()/snapshot() for
     // that cycle.
     void update();
 
@@ -129,40 +121,13 @@ private:
     ethercat::SoemMaster &master_;
     int slave_index_;
     cia402::StateMachine fsm_;
-
-    // Profile Position move-triggering state (see update()). pending_ is
-    // the latest requested target, in encoder counts; triggered_ is the
-    // target of the last move actually kicked off with a controlword bit4
-    // rising edge (nullopt until the first one). bit4_high_ mirrors what
-    // was last written to controlword bit4.
-    //
-    // Retargeting is gated on the drive's own Set-point Acknowledge
-    // (statusword bit12), not just a fixed cycle count: raising bit4
-    // again before the drive has acknowledged the previous one is a new
-    // rising edge sent while it's still mid-handshake for the last one,
-    // which a real eRob simply ignores rather than faulting on --
-    // confirmed on real hardware as silently-dropped steering updates
-    // (affecting whichever module's timing happened to race it, not a
-    // fixed module), not a fault of any kind. awaiting_ack_ is true from
-    // the moment bit4 is raised until the drive's ack bit is seen high;
-    // awaiting_ack_clear_ is true after bit4 is dropped in response,
-    // until the drive's ack bit is seen low again -- only then is it
-    // safe to raise bit4 for a genuinely new target. ack_wait_cycles_ is
-    // a generous timeout (update() calls) on either wait, so a drive that
-    // never acknowledges (or never clears) doesn't freeze this actuator's
-    // steering forever.
-    std::optional<std::int32_t> pending_target_counts_;
-    std::optional<std::int32_t> triggered_target_counts_;
-    bool bit4_high_ = false;
-    bool awaiting_ack_ = false;
-    bool awaiting_ack_clear_ = false;
-    int ack_wait_cycles_ = 0;
-    bool change_set_immediately_ = true;
+    std::int32_t commanded_velocity_counts_per_s_ = 0;
 
     std::uint16_t last_statusword_ = 0;
     std::uint16_t last_controlword_ = 0;
     std::uint32_t last_digital_outputs_ = 0;
     std::uint32_t last_digital_inputs_ = 0;
+    std::int32_t last_written_velocity_counts_per_s_ = 0;
     std::int32_t last_position_counts_ = 0;
     std::int32_t last_velocity_counts_per_s_ = 0;
     std::int16_t last_effort_raw_ = 0;

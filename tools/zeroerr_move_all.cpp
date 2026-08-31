@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -25,6 +26,7 @@
 
 #include "cia402/state_machine.hpp"
 #include "ethercat/soem_master.hpp"
+#include "zeroerr/steer_position_controller.hpp"
 #include "zeroerr/zeroerr_actuator.hpp"
 #include "zeroerr/zeroerr_identity.hpp"
 
@@ -321,25 +323,30 @@ int main(int argc, char **argv) {
     }
 
     std::vector<double> start_degs(actuators.size());
+    // CSV (velocity) mode with the position loop closed here -- see
+    // zeroerr/steer_position_controller.hpp -- rather than the CSP/Profile
+    // Position modes this tool previously streamed a hand-ramped target
+    // to. max_rate/max_accel per actuator are derived from --ramp-s so
+    // each move still takes roughly that long, now via a real
+    // accel-limited P loop instead of a fixed-shape linear ramp.
+    std::vector<zeroerr::SteerPositionController> controllers;
+    controllers.reserve(actuators.size());
     for (std::size_t j = 0; j < actuators.size(); ++j) {
         start_degs[j] = actuators[j].snapshot().position_deg;
+        const double ramp_s = std::max(args.ramp_s, 0.05);
+        const double max_rate_deg_s = std::max(std::abs(args.targets[j].angle_deg - start_degs[j]) / ramp_s, 1.0);
+        controllers.emplace_back(max_rate_deg_s * M_PI / 180.0, (max_rate_deg_s / ramp_s) * M_PI / 180.0);
     }
     std::printf("Commanding %zu actuator(s) (ramping over %.2fs, holding %.2fs total, staggered start)...\n",
                 actuators.size(), args.ramp_s, args.duration_s);
 
-    // Until set_target_angle_deg() is called for the first time, update()
-    // keeps writing the target as whatever the actuator's actual position
-    // currently is -- near-zero effort to "hold". The very first call
-    // permanently switches it onto a fixed commanded target instead, a
-    // real synchronized mode-switch if done for every actuator in the
-    // same cycle. Confirmed on real hardware: doing this simultaneously
-    // for 4 actuators tripped 0x3220 ("bus voltage undervoltage") on all
-    // 4 at once, even though staggering the earlier enable() call alone
-    // was not enough to prevent it. Stagger this transition the same way,
-    // reusing stagger_cycles -- actuator j starts being actively commanded
-    // (and its own ramp clock starts) j*stagger_cycles cycles into this
-    // loop, not all at cycle 0. The loop runs longer to compensate, so
-    // every actuator still gets its full requested ramp_s + duration_s.
+    // Actuator j starts being actively commanded j*stagger_cycles cycles
+    // into this loop, not all at cycle 0 -- confirmed on real hardware:
+    // commanding 4 actuators simultaneously tripped 0x3220 ("bus voltage
+    // undervoltage") on all 4 at once, even though staggering the earlier
+    // enable() call alone was not enough to prevent it. The loop runs
+    // longer to compensate, so every actuator still gets its full
+    // requested ramp_s + duration_s.
     const int total_cycles =
         cycles_for(args.duration_s) + static_cast<int>(actuators.size() - 1) * stagger_cycles;
     next_wake = std::chrono::steady_clock::now();
@@ -348,10 +355,10 @@ int main(int argc, char **argv) {
             actuators[j].update();
             int j_start_cycle = static_cast<int>(j) * stagger_cycles;
             if (i >= j_start_cycle) {
-                double elapsed_s = (i - j_start_cycle) * kCycleSeconds;
-                double fraction = args.ramp_s > 0.0 ? std::min(1.0, elapsed_s / args.ramp_s) : 1.0;
-                double command_deg = start_degs[j] + (args.targets[j].angle_deg - start_degs[j]) * fraction;
-                actuators[j].set_target_angle_deg(command_deg);
+                const double actual_rad = actuators[j].snapshot().position_deg * M_PI / 180.0;
+                const double target_rad = args.targets[j].angle_deg * M_PI / 180.0;
+                const double velocity_rad_s = controllers[j].update(target_rad, actual_rad, kCycleSeconds);
+                actuators[j].set_target_velocity_counts_per_s(zeroerr::deg_to_counts(velocity_rad_s * 180.0 / M_PI));
             }
         }
         master.send_receive();

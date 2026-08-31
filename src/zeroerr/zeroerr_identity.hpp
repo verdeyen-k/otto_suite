@@ -31,31 +31,6 @@ constexpr int kEncoderCountsPerRev = 524288;
 constexpr std::uint16_t kRxPdoIndex = 0x1600;
 constexpr std::uint16_t kTxPdoIndex = 0x1A00;
 
-// Profile Position mode (CiA-402 mode 1) objects -- CANopen/EtherCAT User
-// Manual sec 5.4 (p.56-61). Profile Velocity/Acceleration/Deceleration are
-// the drive's own on-board trajectory-shaping limits; Change Set
-// Immediately (controlword bit5) lets a new Target Position supersede one
-// already in flight without decelerating to a stop first (confirmed via
-// the manual's own timing diagrams, Fig. 5-4 vs 5-5, p.59-60) -- New
-// Set-point (bit4) still requires an explicit 0->1 edge for every retarget
-// even with bit5 set, per the manual's step-by-step procedure (p.57): "the
-// command is rising-edge triggered... switch bit4 to off first and then
-// to on."
-constexpr std::uint16_t kProfileVelocityIndex = 0x6081;      // plus/s, UDINT
-constexpr std::uint16_t kProfileAccelerationIndex = 0x6083;  // plus/s^2, UDINT
-constexpr std::uint16_t kProfileDecelerationIndex = 0x6084;  // plus/s^2, UDINT
-constexpr std::uint16_t kControlwordBitNewSetpoint = 1u << 4;
-constexpr std::uint16_t kControlwordBitChangeSetImmediately = 1u << 5;
-// Statusword bit12, "Set-point acknowledge" (manual Table 5-10, p.60):
-// "1 = Accept a new set-point acknowledge and start generating target
-// again." The host must see this go high before it's safe to drop bit4,
-// and see it go low again before it's safe to raise bit4 for another
-// target -- raising it early is a rising edge sent before the drive has
-// finished processing the previous one, which it silently ignores rather
-// than reporting an error, confirmed on real hardware as steering
-// updates that intermittently just don't take effect.
-constexpr std::uint16_t kStatuswordBitSetpointAck = 1u << 12;
-
 // Byte offsets for the extended PDO mapping this driver configures via SDO
 // at connect time (see configure_zeroerr_pdos), rather than relying on the
 // factory-default 3-field layout -- gives the state-dump tool real
@@ -69,12 +44,14 @@ namespace pdo_layout {
 constexpr int kTargetPositionOffset = 0;   // 0x607A, i32
 constexpr int kDigitalOutputsOffset = 4;   // 0x60FE, u32 -- bit0 = brake (0=engage, 1=release; manual sec 8.2.125)
 constexpr int kControlwordOffset = 8;      // 0x6040, u16
-// 0x60FF/0x6071 are CSV/CST/PV-mode command objects (CANopen/EtherCAT
-// manual Table 5-8, p.57 -- notably absent from the object sets for both
-// CSP and Profile Position, this driver's actual mode); mapped here for
-// completeness but never written -- Profile Position's own feedforward
-// path is Profile Velocity/Acceleration/Deceleration (0x6081/0x6083/
-// 0x6084, see above), configured once at connect time, not per-cycle.
+// 0x60FF is CSV mode's primary command object (CANopen/EtherCAT manual
+// Table 5-8, p.57) -- this driver's actual mode: the position loop is
+// closed on the host (see ZeroErrActuator), not inside the drive, after
+// Profile Position mode was found to sometimes cleanly acknowledge a new
+// target via the CiA-402 handshake without ever applying corrective
+// torque, for reasons that resisted diagnosis (hardware, wiring, Control
+// Source, and dropped/desynced EtherCAT frames were all ruled out).
+// 0x6071 (target torque) stays mapped for completeness but unused.
 constexpr int kTargetVelocityOffset = 10;  // 0x60FF, i32
 constexpr int kTargetTorqueOffset = 14;    // 0x6071, i16
 constexpr int kRxBytes = 16;

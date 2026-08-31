@@ -116,6 +116,14 @@ struct RobotConfig {
         return steer_invert[module] ? -delta : delta;
     }
 
+    // Same steer_invert sign flip as wheel_angle_to_raw_deg, without the
+    // offset -- a rate has no absolute reference point to offset. For
+    // converting a wheel-frame angular velocity (e.g. a host-side steer
+    // position loop's output) into the raw actuator's sign convention.
+    double wheel_angular_velocity_to_raw_deg_s(std::size_t module, double wheel_deg_s) const {
+        return steer_invert[module] ? -wheel_deg_s : wheel_deg_s;
+    }
+
     // Indexed by ModuleIndex. Not independently verified against
     // docs/ecatbustopo.md's physical layout notes -- those two have
     // disagreed before (topology doc said slave 6, live testing showed

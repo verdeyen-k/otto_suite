@@ -40,6 +40,7 @@
 #include "copley/copley_axis.hpp"
 #include "copley/copley_identity.hpp"
 #include "ethercat/soem_master.hpp"
+#include "zeroerr/steer_position_controller.hpp"
 #include "zeroerr/zeroerr_actuator.hpp"
 #include "zeroerr/zeroerr_identity.hpp"
 
@@ -435,8 +436,23 @@ int main(int argc, char **argv) {
     }
 
     std::vector<double> steer_start_degs(steer_actuators.size());
+    // CSV (velocity) mode with the position loop closed here -- see
+    // zeroerr/steer_position_controller.hpp -- rather than the CSP/Profile
+    // Position modes this tool previously streamed a hand-computed target
+    // to. max_rate is set well above the triangle wave's own peak
+    // instantaneous rate (2*amplitude traversed in period/2) so the loop
+    // has headroom to also correct tracking error, not just match the
+    // wave; max_accel reuses --ramp-s as its time-constant, same as the
+    // other bring-up tools.
+    std::vector<zeroerr::SteerPositionController> steer_controllers;
+    steer_controllers.reserve(steer_actuators.size());
     for (std::size_t j = 0; j < steer_actuators.size(); ++j) {
         steer_start_degs[j] = steer_actuators[j].snapshot().position_deg;
+        const double ramp_s = std::max(args.ramp_s, 0.05);
+        const double wave_peak_rate_deg_s =
+            args.steer_period_s > 0.0 ? 4.0 * args.steer_amplitude_deg / args.steer_period_s : 0.0;
+        const double max_rate_deg_s = std::max(1.5 * wave_peak_rate_deg_s, 1.0);
+        steer_controllers.emplace_back(max_rate_deg_s * M_PI / 180.0, (max_rate_deg_s / ramp_s) * M_PI / 180.0);
     }
 
     std::printf("Ramping to start over %.2fs, then oscillating for %.2fs...\n", args.ramp_s, args.duration_s);
@@ -465,7 +481,10 @@ int main(int argc, char **argv) {
                 } else {
                     target_deg = triangle_wave(elapsed_s - args.ramp_s, args.steer_period_s, args.steer_amplitude_deg);
                 }
-                steer_actuators[j].set_target_angle_deg(target_deg);
+                const double actual_rad = steer_actuators[j].snapshot().position_deg * M_PI / 180.0;
+                const double velocity_rad_s =
+                    steer_controllers[j].update(target_deg * M_PI / 180.0, actual_rad, kCycleSeconds);
+                steer_actuators[j].set_target_velocity_counts_per_s(zeroerr::deg_to_counts(velocity_rad_s * 180.0 / M_PI));
             }
         }
         for (std::size_t j = 0; j < drive_axes.size(); ++j) {
@@ -509,6 +528,10 @@ int main(int argc, char **argv) {
     }
 
     std::printf("Ramping drives down to zero before disabling...\n");
+    // Steering is CSV (velocity mode) now too -- stop commanding a
+    // velocity immediately rather than coasting at whatever the
+    // oscillation last commanded for the full ramp-down window.
+    for (auto &a : steer_actuators) a.set_target_velocity_counts_per_s(0);
     const int ramp_down_cycles = cycles_for(args.ramp_s > 0.0 ? args.ramp_s : 1.0);
     next_wake = std::chrono::steady_clock::now();
     for (int i = 0; i < ramp_down_cycles; ++i) {

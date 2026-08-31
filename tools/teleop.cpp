@@ -67,6 +67,7 @@
 #include "ethercat/soem_master.hpp"
 #include "kinematics/swerve_kinematics.hpp"
 #include "robot/robot_config.hpp"
+#include "zeroerr/steer_position_controller.hpp"
 #include "zeroerr/zeroerr_actuator.hpp"
 #include "zeroerr/zeroerr_identity.hpp"
 
@@ -107,7 +108,7 @@ struct Args {
     double stagger_ms = 100.0;
     std::string config_path = robot::kDefaultConfigPath;
     std::string log_csv_path;
-    bool pp_no_immediate = false;
+    double steer_kp = zeroerr::kDefaultSteerKp;
 };
 
 [[noreturn]] void usage_and_exit(const char *prog) {
@@ -117,16 +118,15 @@ struct Args {
                  "         [--max-speed-mps 0.15] [--max-omega-deg-s 30]\n"
                  "         [--max-steer-rate-deg-s 180] [--max-steer-accel-deg-s2 600] [--max-accel-mps2 0.3]\n"
                  "         [--max-wheel-speed-rpm 57] [--hold-ms 150] [--disable-ms 1000] [--stagger-ms 100]\n"
-                 "         [--config config/robot_constants.yaml] [--log-csv PATH] [--no-immediate]\n"
+                 "         [--config config/robot_constants.yaml] [--log-csv PATH] [--steer-kp 6.0]\n"
                  "  max-speed-mps/max-omega-deg-s/max-steer-rate-deg-s/max-steer-accel-deg-s2/max-accel-mps2/\n"
                  "  max-wheel-speed-rpm/--fl/--fr/--rl/--rr all default to the robot config file's values;\n"
                  "  pass a flag to override it for one run (e.g. after a re-scan shows different slaves).\n"
                  "  --log-csv: write one row per 5ms cycle (chassis command, per-module commanded vs.\n"
-                 "  actual raw steer angle, controlword bit4/statusword bit12, torque/velocity feedback)\n"
-                 "  for offline comparison of joystick input against actual actuator response.\n"
-                 "  --no-immediate: diagnostic -- steer retargets stop at the current target before\n"
-                 "  starting the next move, instead of blending (Change Set Immediately). See\n"
-                 "  ZeroErrActuator::set_change_set_immediately()'s comment.\n",
+                 "  actual raw steer angle, torque/velocity feedback) for offline comparison of joystick\n"
+                 "  input against actual actuator response.\n"
+                 "  --steer-kp: proportional gain (rad/s commanded per rad of angle error) for the\n"
+                 "  host-side steer position loop -- see zeroerr/steer_position_controller.hpp.\n",
                  prog);
     std::exit(2);
 }
@@ -222,8 +222,8 @@ Args parse_args(int argc, char **argv) {
             args.config_path = next();
         } else if (arg == "--log-csv") {
             args.log_csv_path = next();
-        } else if (arg == "--no-immediate") {
-            args.pp_no_immediate = true;
+        } else if (arg == "--steer-kp") {
+            args.steer_kp = std::atof(next().c_str());
         } else {
             usage_and_exit(argv[0]);
         }
@@ -302,6 +302,8 @@ int main(int argc, char **argv) {
     }
 
     const double max_omega_rad_s = args.max_omega_deg_s * M_PI / 180.0;
+    const double max_steer_rate_rad_s = args.max_steer_rate_deg_s * M_PI / 180.0;
+    const double max_steer_accel_rad_s2 = args.max_steer_accel_deg_s2 * M_PI / 180.0;
     // Wheel-speed cap uses the (possibly CLI-overridden) RPM value, not
     // cfg's directly, converted with the same wheel radius the drive
     // encoder scale uses.
@@ -323,8 +325,7 @@ int main(int argc, char **argv) {
         std::printf("Module %s: steer slave [%d] name='%s', drive slave [%d]/%s name='%s'.\n",
                     kModuleNames[m], t.steer_slave, master.slave_name(t.steer_slave).c_str(), t.drive_slave,
                     axis_name(t.drive_axis), master.slave_name(t.drive_slave).c_str());
-        zeroerr::configure_zeroerr_pdos(master, t.steer_slave, args.max_steer_rate_deg_s, args.max_steer_accel_deg_s2,
-                                         args.max_steer_accel_deg_s2);
+        zeroerr::configure_zeroerr_pdos(master, t.steer_slave);
     }
     std::vector<int> configured_drive_slaves;
     for (const auto &t : args.modules) {
@@ -349,12 +350,6 @@ int main(int argc, char **argv) {
     for (const auto &t : args.modules) {
         steer_actuators.emplace_back(master, t.steer_slave);
         drive_axes.emplace_back(master, t.drive_slave, t.drive_axis);
-    }
-    if (args.pp_no_immediate) {
-        std::printf("--no-immediate: steer moves will stop at the current target before starting the next one "
-                    "(no Change Set Immediately), instead of blending -- diagnostic build, see "
-                    "set_change_set_immediately()'s comment.\n");
-        for (auto &a : steer_actuators) a.set_change_set_immediately(false);
     }
 
     auto update_all = [&]() {
@@ -557,28 +552,31 @@ int main(int argc, char **argv) {
     kinematics::SwerveKinematics kinematics_solver(
         {module_positions[0], module_positions[1], module_positions[2], module_positions[3]});
 
-    // last_commanded_angle_rad/last_commanded_speed_mps are the last
-    // targets actually sent to hardware. Angle is kept as an unwrapped
-    // accumulator (not normalized to [-pi,pi]) since the actuator's
-    // absolute position target has no reason to wrap. Steering's
-    // acceleration-limited ramp toward this angle now happens on the
-    // actuator itself (Profile Position mode's Profile Accel/Decel, see
-    // zeroerr_actuator.cpp) rather than in software here -- this used to
-    // also be software-ramped, needed to avoid tripping 0x8400 "Velocity
-    // Error Exceeds the Limit Value" on an instant velocity step, but
-    // streaming raw CSP setpoints with no feedforward path turned out to
-    // produce severely underdamped tracking on real hardware; Profile
-    // Position mode's own on-drive profiler replaces both concerns at
-    // once. The drive axis doesn't need either treatment: it's CSV
-    // (velocity mode), so max_accel_mps2 below already limits the actual
-    // commanded velocity directly, not a value merely implied by position
-    // deltas.
+    // last_commanded_angle_rad is the steer position loop's setpoint
+    // (wheel-frame radians, unwrapped accumulator -- no reason to wrap
+    // since it's just fed to std::remainder-based error math, never sent
+    // directly as a raw target anymore). last_commanded_speed_mps is the
+    // drive axis's last commanded speed. Steering used to run CiA-402
+    // Profile Position mode, letting the drive's own on-board trajectory
+    // profiler do both the position loop and the acceleration-limited
+    // ramp -- abandoned after real hardware showed the drive could
+    // cleanly acknowledge a retarget via the CiA-402 handshake while
+    // applying zero corrective torque for seconds, a failure mode that
+    // resisted diagnosis after ruling out hardware, wiring, Control
+    // Source, and EtherCAT frame/sync health. Steering is now CSV
+    // (velocity mode) like the drive axis always has been, with the
+    // position loop closed here via steer_controllers (see
+    // zeroerr/steer_position_controller.hpp) -- fully visible in this
+    // code instead of opaque inside the drive.
     std::array<double, 4> last_commanded_angle_rad{};
     std::array<double, 4> last_commanded_speed_mps{0.0, 0.0, 0.0, 0.0};
-    std::array<double, 4> commanded_raw_deg{};
+    std::array<double, 4> commanded_raw_deg{};  // logging only, see --log-csv
+    std::vector<zeroerr::SteerPositionController> steer_controllers;
+    steer_controllers.reserve(4);
     for (std::size_t j = 0; j < 4; ++j) {
         last_commanded_angle_rad[j] =
             cfg.raw_to_wheel_angle_deg(j, steer_actuators[j].snapshot().position_deg) * M_PI / 180.0;
+        steer_controllers.emplace_back(max_steer_rate_rad_s, max_steer_accel_rad_s2, args.steer_kp);
     }
 
     // Per-cycle CSV of commanded vs. actual raw steer angle, for offline
@@ -600,9 +598,11 @@ int main(int argc, char **argv) {
         log_csv << "t_ms,wkc,vx_cmd,vy_cmd,w_cmd";
         for (const char *m : kModuleNames) {
             // effort_raw/velocity_actual distinguish "not moving because
-            // the drive isn't trying" (near-zero torque despite an
-            // accepted move) from "not moving despite trying" (torque
-            // saturated, position still frozen -- mechanically stuck).
+            // the drive isn't trying" (near-zero torque despite a
+            // commanded velocity) from "not moving despite trying"
+            // (torque saturated, position still frozen -- mechanically
+            // stuck). cmd_velocity is our own commanded raw velocity, for
+            // comparing against velocity_actual directly.
             // sm_missed/sync_err are DC (distributed clock) diagnostics
             // (manual p.42, Table 4-8) -- a slave can exchange frames
             // with a clean working counter (see wkc above) while its own
@@ -613,7 +613,7 @@ int main(int argc, char **argv) {
             // these are mailbox reads with real latency -- polling all 4
             // modules every cycle would perturb the very cyclic timing
             // being investigated.
-            log_csv << ',' << m << "_target_deg," << m << "_actual_deg," << m << "_bit4," << m << "_ack," << m
+            log_csv << ',' << m << "_target_deg," << m << "_actual_deg," << m << "_cmd_velocity," << m
                      << "_effort_raw," << m << "_velocity_actual," << m << "_sm_missed_out," << m
                      << "_sm_missed_in," << m << "_sync_err_out," << m << "_sync_err_in";
         }
@@ -652,18 +652,6 @@ int main(int argc, char **argv) {
     int wake_cycle = 0;
     std::array<bool, 4> steer_was_faulted{false, false, false, false};
     std::array<bool, 4> drive_was_faulted{false, false, false, false};
-    // Edge-triggered Profile Position handshake trace (see the print
-    // below): the periodic per-cycle status print only samples once every
-    // 100 cycles (500ms), far too coarse to see the Set-point Acknowledge
-    // (statusword bit12), which the manual's own timing diagrams show as
-    // a brief pulse -- easily missed entirely by that sampling rate even
-    // when the handshake is working correctly. Tracking the previous
-    // controlword bit4 ("New Set-point") and statusword bit12 per module
-    // lets every actual transition get logged immediately, regardless of
-    // the print cadence, without flooding the terminal (transitions are
-    // inherently rate-limited by the handshake itself).
-    std::array<bool, 4> prev_steer_bit4{false, false, false, false};
-    std::array<bool, 4> prev_steer_ack{false, false, false, false};
     // DC sync diagnostics (see --log-csv header comment) -- last-known
     // values, refreshed one module at a time by the round-robin poll
     // below rather than every cycle.
@@ -782,64 +770,52 @@ int main(int argc, char **argv) {
             steer_actuators[j].update();
             drive_axes[j].update();
 
-            {
-                constexpr std::uint16_t kBitNewSetpoint = 1u << 4;
-                constexpr std::uint16_t kBitSetpointAck = 1u << 12;
-                auto steer_snap = steer_actuators[j].snapshot();
-                const bool bit4 = (steer_snap.controlword_raw & kBitNewSetpoint) != 0;
-                const bool ack = (steer_snap.statusword_raw & kBitSetpointAck) != 0;
-                if (bit4 != prev_steer_bit4[j] || ack != prev_steer_ack[j]) {
-                    std::printf("[%6.0fms] [%s steer] bit4: %d->%d  ack: %d->%d  (cw=0x%04X sw=0x%04X pos=%.2fdeg)\n",
-                                cycle * kCycleSeconds * 1000.0, kModuleNames[j], prev_steer_bit4[j], bit4,
-                                prev_steer_ack[j], ack, steer_snap.controlword_raw, steer_snap.statusword_raw,
-                                steer_snap.position_deg);
-                    prev_steer_bit4[j] = bit4;
-                    prev_steer_ack[j] = ack;
-                }
-            }
-
             const bool steer_gate =
                 target_nonzero && cycle >= wake_cycle + static_cast<int>(j) * stagger_cycles;
             const bool drive_gate =
                 target_nonzero && cycle >= wake_cycle + static_cast<int>(4 + j) * stagger_cycles;
 
+            // Real measured angle, used both for the flip decision below
+            // and as the position loop's feedback.
+            const double actual_wheel_angle_rad =
+                cfg.raw_to_wheel_angle_deg(j, steer_actuators[j].snapshot().position_deg) * M_PI / 180.0;
+
             kinematics::ModuleState optimized{};
             if (target_nonzero) {
                 // Flip-decide against the actuator's REAL measured angle,
-                // not our own last-commanded value -- Profile Position
-                // mode lets the drive ramp toward a target over however
-                // long it takes, so "last commanded" can legitimately sit
-                // far from where the wheel physically is at any given
-                // moment. Deciding "which way is shorter" from a stale
-                // assumed position (instead of truth) is how a
-                // lagging/stuck actuator ends up spinning multiple turns
-                // to catch up once it finally moves: the short way
-                // computed from an assumed position can be completely
+                // not our own last-commanded value -- with the position
+                // loop now closed on the host (see steer_controllers
+                // below), "last commanded" is just this loop's setpoint
+                // and can legitimately sit meaningfully ahead of where the
+                // wheel physically is while it's still catching up.
+                // Deciding "which way is shorter" from a stale assumed
+                // position (instead of truth) is how a lagging actuator
+                // ends up spinning multiple turns to catch up: the short
+                // way computed from an assumed position can be completely
                 // wrong once the real position has drifted far from it.
-                const double actual_wheel_angle_rad =
-                    cfg.raw_to_wheel_angle_deg(j, steer_actuators[j].snapshot().position_deg) * M_PI / 180.0;
                 optimized = kinematics::SwerveKinematics::optimize(desired[j], actual_wheel_angle_rad);
             }
 
-            // The steer actuator's own Profile Position move (Change Set
-            // Immediately, see zeroerr_actuator.cpp) now does the
-            // accel/velocity-limited ramp toward the target on-drive --
-            // just hand it the kinematics-optimized angle directly. Not
-            // steer_gate (at rest, or this module's stagger slot hasn't
-            // opened yet) means holding the last commanded angle instead
-            // of retargeting, so the module stays put rather than moving
-            // before its staggered slot opens.
+            // Not steer_gate (at rest, or this module's stagger slot
+            // hasn't opened yet) means holding the last commanded angle
+            // instead of retargeting, so the module stays put rather than
+            // moving before its staggered slot opens -- the position loop
+            // below still runs against that held setpoint every cycle,
+            // actively resisting drift rather than freewheeling.
             if (steer_gate) {
                 last_commanded_angle_rad[j] = optimized.angle_rad;
             }
+            const double steer_velocity_rad_s =
+                steer_controllers[j].update(last_commanded_angle_rad[j], actual_wheel_angle_rad, kCycleSeconds);
+            const double steer_velocity_deg_s = steer_velocity_rad_s * 180.0 / M_PI;
+            commanded_raw_deg[j] = cfg.wheel_angle_to_raw_deg(j, last_commanded_angle_rad[j] * 180.0 / M_PI);
+            steer_actuators[j].set_target_velocity_counts_per_s(
+                zeroerr::deg_to_counts(cfg.wheel_angular_velocity_to_raw_deg_s(j, steer_velocity_deg_s)));
 
             const double target_speed_mps = drive_gate ? optimized.speed_mps : 0.0;
             const double max_speed_step = args.max_accel_mps2 * kCycleSeconds;
             const double speed_delta = target_speed_mps - last_commanded_speed_mps[j];
             last_commanded_speed_mps[j] += clamp_magnitude(speed_delta, max_speed_step);
-
-            commanded_raw_deg[j] = cfg.wheel_angle_to_raw_deg(j, last_commanded_angle_rad[j] * 180.0 / M_PI);
-            steer_actuators[j].set_target_angle_deg(commanded_raw_deg[j]);
             drive_axes[j].set_target_velocity_counts_per_s(mps_to_counts_per_s(cfg, j, last_commanded_speed_mps[j]));
 
             // Rising-edge fault logging: the earlier bring-up checkpoints
@@ -864,23 +840,15 @@ int main(int argc, char **argv) {
         const int wkc = master.send_receive();
 
         if (log_csv) {
-            constexpr std::uint16_t kBitNewSetpoint = 1u << 4;
-            constexpr std::uint16_t kBitSetpointAck = 1u << 12;
             // wkc below expected_wkc() means this cycle's frame didn't
             // reach/return from every mapped slave -- a real dropped or
             // corrupted EtherCAT exchange, not a software/protocol issue.
-            // A slave with a stale process image from a prior good cycle
-            // can otherwise look deceptively normal: our own writes
-            // (commanded target, controlword) and even a replayed
-            // acknowledge bit could all still look self-consistent while
-            // the physical actuator never actually saw the fresh command.
             log_csv << cycle * kCycleSeconds * 1000.0 << ',' << wkc << ',' << target.vx_mps << ',' << target.vy_mps
                     << ',' << target.omega_rad_per_s;
             for (std::size_t j = 0; j < 4; ++j) {
                 auto s = steer_actuators[j].snapshot();
                 log_csv << ',' << commanded_raw_deg[j] << ',' << s.position_deg << ','
-                        << ((s.controlword_raw & kBitNewSetpoint) != 0) << ','
-                        << ((s.statusword_raw & kBitSetpointAck) != 0) << ',' << s.effort_actual_raw << ','
+                        << s.commanded_velocity_counts_per_s << ',' << s.effort_actual_raw << ','
                         << s.velocity_actual_counts_per_s << ',' << sm_missed_out[j] << ',' << sm_missed_in[j] << ','
                         << sync_err_out[j] << ',' << sync_err_in[j];
             }
@@ -923,22 +891,11 @@ int main(int argc, char **argv) {
             for (std::size_t j = 0; j < 4; ++j) {
                 auto steer_s = steer_actuators[j].snapshot();
                 auto drive_s = drive_axes[j].snapshot();
-                // bit4 (New Set-point) and bit12 (Set-point Acknowledge)
-                // decoded explicitly -- diagnosing whether Profile
-                // Position moves are actually being accepted, or the
-                // retarget handshake (zeroerr_actuator.cpp) is stuck
-                // waiting on an acknowledge that isn't arriving as
-                // expected. Not needed once that's confirmed working.
-                constexpr std::uint16_t kBitNewSetpoint = 1u << 4;
-                constexpr std::uint16_t kBitSetpointAck = 1u << 12;
                 std::printf(
-                    "    [%s] steer=%7.2fdeg mode=%d cw=0x%04X(bit4=%d) sw=0x%04X(ack=%d) drive_cmd=%8d "
-                    "drive_act=%8d fault=%s\n",
-                    kModuleNames[j], steer_s.position_deg, steer_s.mode_of_operation_display,
-                    steer_s.controlword_raw, (steer_s.controlword_raw & kBitNewSetpoint) != 0,
-                    steer_s.statusword_raw, (steer_s.statusword_raw & kBitSetpointAck) != 0,
-                    drive_s.commanded_velocity_counts_per_s, drive_s.velocity_actual_counts_per_s,
-                    (steer_s.has_fault || drive_s.has_fault) ? "FAULT" : "-");
+                    "    [%s] steer=%7.2fdeg steer_cmd=%8d steer_act=%8d drive_cmd=%8d drive_act=%8d fault=%s\n",
+                    kModuleNames[j], steer_s.position_deg, steer_s.commanded_velocity_counts_per_s,
+                    steer_s.velocity_actual_counts_per_s, drive_s.commanded_velocity_counts_per_s,
+                    drive_s.velocity_actual_counts_per_s, (steer_s.has_fault || drive_s.has_fault) ? "FAULT" : "-");
             }
             std::fflush(stdout);
         }
@@ -949,6 +906,11 @@ int main(int argc, char **argv) {
     }
 
     std::printf("Ramping drives down to zero before disabling...\n");
+    // Steering is CSV (velocity mode) now too -- stop commanding a
+    // velocity immediately rather than coasting at whatever was last
+    // commanded for the full ramp-down window (unnecessary before, when
+    // steering held position on its own via Profile Position mode).
+    for (auto &a : steer_actuators) a.set_target_velocity_counts_per_s(0);
     const int ramp_down_cycles = cycles_for(1.0);
     next_wake = std::chrono::steady_clock::now();
     for (int i = 0; i < ramp_down_cycles; ++i) {

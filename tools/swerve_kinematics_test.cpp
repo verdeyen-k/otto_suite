@@ -53,6 +53,7 @@
 #include "ethercat/soem_master.hpp"
 #include "kinematics/swerve_kinematics.hpp"
 #include "robot/robot_config.hpp"
+#include "zeroerr/steer_position_controller.hpp"
 #include "zeroerr/zeroerr_actuator.hpp"
 #include "zeroerr/zeroerr_identity.hpp"
 
@@ -84,6 +85,7 @@ struct Args {
     double stagger_ms = 100.0;
     std::string config_path = robot::kDefaultConfigPath;
     bool no_drive = false;
+    double steer_kp = zeroerr::kDefaultSteerKp;
 };
 
 [[noreturn]] void usage_and_exit(const char *prog) {
@@ -91,14 +93,16 @@ struct Args {
                  "Usage: %s --iface IFNAME --fl steer=N,drive=M,axis={a|b} --fr ... --rl ... --rr ...\n"
                  "         [--max-speed-mps 0.15] [--max-omega-deg-s 30]\n"
                  "         [--phase-duration-s 4] [--ramp-s 1] [--stagger-ms 100]\n"
-                 "         [--config config/robot_constants.yaml] [--no-drive]\n"
+                 "         [--config config/robot_constants.yaml] [--no-drive] [--steer-kp 6.0]\n"
                  "  --fl/--fr/--rl/--rr default to the robot config file's bus locations; pass a\n"
                  "  flag to override one for this run.\n"
                  "  Runs forward -> strafe -> rotate -> diagonal -> stop, each ramped in\n"
                  "  and held for phase-duration-s.\n"
                  "  --no-drive: never enable the drive axes (steering only) -- they stay in\n"
                  "  SWITCH_ON_DISABLED the whole run, so no drive torque is ever possible\n"
-                 "  regardless of what a commanded speed would otherwise be.\n",
+                 "  regardless of what a commanded speed would otherwise be.\n"
+                 "  --steer-kp: proportional gain for the host-side steer position loop --\n"
+                 "  see zeroerr/steer_position_controller.hpp.\n",
                  prog);
     std::exit(2);
 }
@@ -180,6 +184,8 @@ Args parse_args(int argc, char **argv) {
             args.config_path = next();
         } else if (arg == "--no-drive") {
             args.no_drive = true;
+        } else if (arg == "--steer-kp") {
+            args.steer_kp = std::atof(next().c_str());
         } else {
             usage_and_exit(argv[0]);
         }
@@ -281,8 +287,7 @@ int main(int argc, char **argv) {
         std::printf("Module %s: steer slave [%d] name='%s', drive slave [%d]/%s name='%s'.\n",
                     kModuleNames[m], t.steer_slave, master.slave_name(t.steer_slave).c_str(), t.drive_slave,
                     axis_name(t.drive_axis), master.slave_name(t.drive_slave).c_str());
-        zeroerr::configure_zeroerr_pdos(master, t.steer_slave, cfg.max_steer_rate_deg_s, cfg.max_steer_accel_deg_s2,
-                                         cfg.max_steer_accel_deg_s2);
+        zeroerr::configure_zeroerr_pdos(master, t.steer_slave);
     }
     std::vector<int> configured_drive_slaves;
     for (const auto &t : args.modules) {
@@ -469,27 +474,31 @@ int main(int argc, char **argv) {
     kinematics::SwerveKinematics kinematics_solver(
         {module_positions[0], module_positions[1], module_positions[2], module_positions[3]});
     std::array<double, 4> last_commanded_angle_rad{};
+    const double max_steer_rate_rad_s = cfg.max_steer_rate_deg_s * M_PI / 180.0;
+    const double max_steer_accel_rad_s2 = cfg.max_steer_accel_deg_s2 * M_PI / 180.0;
+    std::vector<zeroerr::SteerPositionController> steer_controllers;
+    steer_controllers.reserve(4);
+    for (std::size_t j = 0; j < 4; ++j) {
+        steer_controllers.emplace_back(max_steer_rate_rad_s, max_steer_accel_rad_s2, args.steer_kp);
+    }
 
     // Point the wheels at phase 0's target direction BEFORE commanding any
     // drive speed. Linearly ramping the CHASSIS vector itself from (0,0,0)
     // does NOT gradually rotate the steering angle: every point on a
     // straight line through the origin has the same direction as its
     // endpoint, so atan2() commits to the final bearing the instant the
-    // magnitude leaves zero -- only speed actually ramps. Confirmed on real
-    // hardware: every steering actuator not already resting near phase 0's
-    // target angle faulted immediately on its first command, from the
-    // resulting near-instantaneous CSP position jump (up to 55 degrees in
-    // one 5ms cycle). Aligning first, with drive speed held at zero, avoids
-    // that jump entirely; the main loop below then starts from an angle
-    // that already matches what it would compute near frac=0 anyway.
+    // magnitude leaves zero -- only speed actually ramps. The steer
+    // position loop's own accel limiting (steer_controllers) handles the
+    // smooth ramp-up from a standstill now; this phase just holds drive
+    // speed at zero while it settles, so the main loop below starts from
+    // an angle that already matches what it would compute near frac=0.
     std::array<kinematics::ModuleState, 4> phase0_desired = kinematics_solver.to_module_states(kPhases[0]);
-    std::array<double, 4> align_start_deg{};
-    std::array<double, 4> align_target_deg{};
     for (std::size_t j = 0; j < 4; ++j) {
-        align_start_deg[j] = cfg.raw_to_wheel_angle_deg(j, steer_actuators[j].snapshot().position_deg);
+        const double actual_wheel_angle_rad =
+            cfg.raw_to_wheel_angle_deg(j, steer_actuators[j].snapshot().position_deg) * M_PI / 180.0;
         kinematics::ModuleState optimized =
-            kinematics::SwerveKinematics::optimize(phase0_desired[j], align_start_deg[j] * M_PI / 180.0);
-        align_target_deg[j] = optimized.angle_rad * 180.0 / M_PI;
+            kinematics::SwerveKinematics::optimize(phase0_desired[j], actual_wheel_angle_rad);
+        last_commanded_angle_rad[j] = optimized.angle_rad;
     }
     std::printf("Aligning steering to starting direction (drive speed held at zero)...\n");
     const int align_cycles = cycles_for(args.ramp_s) + static_cast<int>(3) * stagger_cycles;
@@ -502,11 +511,12 @@ int main(int argc, char **argv) {
                 align_active[j] = true;
             }
             if (align_active[j]) {
-                double elapsed_s = (i - static_cast<int>(j) * stagger_cycles) * kCycleSeconds;
-                double frac = args.ramp_s > 0.0 ? std::min(1.0, elapsed_s / args.ramp_s) : 1.0;
-                double angle_deg = align_start_deg[j] + (align_target_deg[j] - align_start_deg[j]) * frac;
-                steer_actuators[j].set_target_angle_deg(cfg.wheel_angle_to_raw_deg(j, angle_deg));
-                last_commanded_angle_rad[j] = angle_deg * M_PI / 180.0;
+                const double actual_wheel_angle_rad =
+                    cfg.raw_to_wheel_angle_deg(j, steer_actuators[j].snapshot().position_deg) * M_PI / 180.0;
+                const double steer_velocity_rad_s =
+                    steer_controllers[j].update(last_commanded_angle_rad[j], actual_wheel_angle_rad, kCycleSeconds);
+                steer_actuators[j].set_target_velocity_counts_per_s(zeroerr::deg_to_counts(
+                    cfg.wheel_angular_velocity_to_raw_deg_s(j, steer_velocity_rad_s * 180.0 / M_PI)));
             }
         }
         master.send_receive();
@@ -563,19 +573,23 @@ int main(int argc, char **argv) {
             }
             // Flip-decide against the actuator's REAL measured angle, not
             // our own last-commanded value -- see teleop.cpp's identical
-            // fix for why: Profile Position mode lets the drive ramp
-            // toward a target over however long it takes, so a stale
-            // assumed "current" position can pick the wrong short way,
-            // exactly how a lagging actuator ends up spinning multiple
-            // turns to catch up once it finally moves.
+            // fix for why: with the position loop closed on the host
+            // (steer_controllers), "last commanded" is just this loop's
+            // setpoint and can legitimately sit ahead of where the wheel
+            // physically is while still catching up. Deciding "which way
+            // is shorter" from a stale assumed position instead of truth
+            // is how a lagging actuator ends up spinning multiple turns
+            // to catch up once it finally moves.
             const double actual_wheel_angle_rad =
                 cfg.raw_to_wheel_angle_deg(j, steer_actuators[j].snapshot().position_deg) * M_PI / 180.0;
             kinematics::ModuleState optimized =
                 kinematics::SwerveKinematics::optimize(desired[j], actual_wheel_angle_rad);
             if (steer_active[j]) {
                 last_commanded_angle_rad[j] = optimized.angle_rad;
-                steer_actuators[j].set_target_angle_deg(
-                    cfg.wheel_angle_to_raw_deg(j, optimized.angle_rad * 180.0 / M_PI));
+                const double steer_velocity_rad_s =
+                    steer_controllers[j].update(last_commanded_angle_rad[j], actual_wheel_angle_rad, kCycleSeconds);
+                steer_actuators[j].set_target_velocity_counts_per_s(zeroerr::deg_to_counts(
+                    cfg.wheel_angular_velocity_to_raw_deg_s(j, steer_velocity_rad_s * 180.0 / M_PI)));
             }
             if (drive_active[j]) {
                 drive_axes[j].set_target_velocity_counts_per_s(mps_to_counts_per_s(cfg, j, optimized.speed_mps));
@@ -615,6 +629,10 @@ int main(int argc, char **argv) {
     }
 
     std::printf("Ramping drives down to zero before disabling...\n");
+    // Steering is CSV (velocity mode) now too -- stop commanding a
+    // velocity immediately rather than coasting at whatever was last
+    // commanded for the full ramp-down window.
+    for (auto &a : steer_actuators) a.set_target_velocity_counts_per_s(0);
     const int ramp_down_cycles = cycles_for(args.ramp_s > 0.0 ? args.ramp_s : 1.0);
     next_wake = std::chrono::steady_clock::now();
     for (int i = 0; i < ramp_down_cycles; ++i) {
