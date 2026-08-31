@@ -582,7 +582,10 @@ int main(int argc, char **argv) {
             std::fprintf(stderr, "error: could not open --log-csv path '%s'\n", args.log_csv_path.c_str());
             return 1;
         }
-        log_csv << "t_ms,vx_cmd,vy_cmd,w_cmd";
+        std::printf("EtherCAT expected_wkc()=%d -- --log-csv's wkc column should equal this every cycle; a dip "
+                    "means a dropped/corrupted frame that cycle.\n",
+                    master.expected_wkc());
+        log_csv << "t_ms,wkc,vx_cmd,vy_cmd,w_cmd";
         for (const char *m : kModuleNames) {
             // effort_raw/velocity_actual distinguish "not moving because
             // the drive isn't trying" (near-zero torque despite an
@@ -814,13 +817,21 @@ int main(int argc, char **argv) {
             }
             drive_was_faulted[j] = df;
         }
-        master.send_receive();
+        const int wkc = master.send_receive();
 
         if (log_csv) {
             constexpr std::uint16_t kBitNewSetpoint = 1u << 4;
             constexpr std::uint16_t kBitSetpointAck = 1u << 12;
-            log_csv << cycle * kCycleSeconds * 1000.0 << ',' << target.vx_mps << ',' << target.vy_mps << ','
-                    << target.omega_rad_per_s;
+            // wkc below expected_wkc() means this cycle's frame didn't
+            // reach/return from every mapped slave -- a real dropped or
+            // corrupted EtherCAT exchange, not a software/protocol issue.
+            // A slave with a stale process image from a prior good cycle
+            // can otherwise look deceptively normal: our own writes
+            // (commanded target, controlword) and even a replayed
+            // acknowledge bit could all still look self-consistent while
+            // the physical actuator never actually saw the fresh command.
+            log_csv << cycle * kCycleSeconds * 1000.0 << ',' << wkc << ',' << target.vx_mps << ',' << target.vy_mps
+                    << ',' << target.omega_rad_per_s;
             for (std::size_t j = 0; j < 4; ++j) {
                 auto s = steer_actuators[j].snapshot();
                 log_csv << ',' << commanded_raw_deg[j] << ',' << s.position_deg << ','
