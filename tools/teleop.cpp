@@ -603,8 +603,19 @@ int main(int argc, char **argv) {
             // the drive isn't trying" (near-zero torque despite an
             // accepted move) from "not moving despite trying" (torque
             // saturated, position still frozen -- mechanically stuck).
+            // sm_missed/sync_err are DC (distributed clock) diagnostics
+            // (manual p.42, Table 4-8) -- a slave can exchange frames
+            // with a clean working counter (see wkc above) while its own
+            // internal sync to the master's cycle timing is degraded, a
+            // distinct failure mode from a dropped/corrupted frame. Only
+            // sampled periodically (see the round-robin SDO poll below,
+            // not every cycle) and carried forward between polls, since
+            // these are mailbox reads with real latency -- polling all 4
+            // modules every cycle would perturb the very cyclic timing
+            // being investigated.
             log_csv << ',' << m << "_target_deg," << m << "_actual_deg," << m << "_bit4," << m << "_ack," << m
-                     << "_effort_raw," << m << "_velocity_actual";
+                     << "_effort_raw," << m << "_velocity_actual," << m << "_sm_missed_out," << m
+                     << "_sm_missed_in," << m << "_sync_err_out," << m << "_sync_err_in";
         }
         log_csv << '\n';
     }
@@ -653,6 +664,14 @@ int main(int argc, char **argv) {
     // inherently rate-limited by the handshake itself).
     std::array<bool, 4> prev_steer_bit4{false, false, false, false};
     std::array<bool, 4> prev_steer_ack{false, false, false, false};
+    // DC sync diagnostics (see --log-csv header comment) -- last-known
+    // values, refreshed one module at a time by the round-robin poll
+    // below rather than every cycle.
+    std::array<int, 4> sm_missed_out{0, 0, 0, 0};
+    std::array<int, 4> sm_missed_in{0, 0, 0, 0};
+    std::array<bool, 4> sync_err_out{false, false, false, false};
+    std::array<bool, 4> sync_err_in{false, false, false, false};
+    std::size_t sm_poll_module = 0;
 
     auto next_wake = std::chrono::steady_clock::now();
     while (!g_stop.load()) {
@@ -849,9 +868,24 @@ int main(int argc, char **argv) {
                 log_csv << ',' << commanded_raw_deg[j] << ',' << s.position_deg << ','
                         << ((s.controlword_raw & kBitNewSetpoint) != 0) << ','
                         << ((s.statusword_raw & kBitSetpointAck) != 0) << ',' << s.effort_actual_raw << ','
-                        << s.velocity_actual_counts_per_s;
+                        << s.velocity_actual_counts_per_s << ',' << sm_missed_out[j] << ',' << sm_missed_in[j] << ','
+                        << sync_err_out[j] << ',' << sync_err_in[j];
             }
             log_csv << '\n';
+        }
+
+        // Round-robin one module's DC sync diagnostics per print interval
+        // (mailbox reads, real latency -- see the --log-csv header
+        // comment) rather than all 4 every cycle, so this doesn't itself
+        // perturb the cyclic timing under investigation. Only runs when
+        // actually logging, to avoid needless mailbox traffic otherwise.
+        if (log_csv && cycle % kPrintEveryNCycles == 0) {
+            auto &a = steer_actuators[sm_poll_module];
+            if (auto v = a.read_sm_event_missed(/*outputs=*/true)) sm_missed_out[sm_poll_module] = *v;
+            if (auto v = a.read_sm_event_missed(/*outputs=*/false)) sm_missed_in[sm_poll_module] = *v;
+            if (auto v = a.read_sync_error(/*outputs=*/true)) sync_err_out[sm_poll_module] = *v;
+            if (auto v = a.read_sync_error(/*outputs=*/false)) sync_err_in[sm_poll_module] = *v;
+            sm_poll_module = (sm_poll_module + 1) % 4;
         }
 
         if (cycle % kTelemetryEveryNCycles == 0) {
