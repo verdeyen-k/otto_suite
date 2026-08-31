@@ -53,6 +53,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <fstream>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -105,6 +106,7 @@ struct Args {
     double disable_ms = 1000.0;
     double stagger_ms = 100.0;
     std::string config_path = robot::kDefaultConfigPath;
+    std::string log_csv_path;
 };
 
 [[noreturn]] void usage_and_exit(const char *prog) {
@@ -114,10 +116,13 @@ struct Args {
                  "         [--max-speed-mps 0.15] [--max-omega-deg-s 30]\n"
                  "         [--max-steer-rate-deg-s 180] [--max-steer-accel-deg-s2 600] [--max-accel-mps2 0.3]\n"
                  "         [--max-wheel-speed-rpm 57] [--hold-ms 150] [--disable-ms 1000] [--stagger-ms 100]\n"
-                 "         [--config config/robot_constants.yaml]\n"
+                 "         [--config config/robot_constants.yaml] [--log-csv PATH]\n"
                  "  max-speed-mps/max-omega-deg-s/max-steer-rate-deg-s/max-steer-accel-deg-s2/max-accel-mps2/\n"
                  "  max-wheel-speed-rpm/--fl/--fr/--rl/--rr all default to the robot config file's values;\n"
-                 "  pass a flag to override it for one run (e.g. after a re-scan shows different slaves).\n",
+                 "  pass a flag to override it for one run (e.g. after a re-scan shows different slaves).\n"
+                 "  --log-csv: write one row per 5ms cycle (chassis command, per-module commanded vs.\n"
+                 "  actual raw steer angle, controlword bit4/statusword bit12) for offline comparison of\n"
+                 "  joystick input against actual actuator response.\n",
                  prog);
     std::exit(2);
 }
@@ -211,6 +216,8 @@ Args parse_args(int argc, char **argv) {
             args.stagger_ms = std::atof(next().c_str());
         } else if (arg == "--config") {
             args.config_path = next();
+        } else if (arg == "--log-csv") {
+            args.log_csv_path = next();
         } else {
             usage_and_exit(argv[0]);
         }
@@ -556,9 +563,30 @@ int main(int argc, char **argv) {
     // deltas.
     std::array<double, 4> last_commanded_angle_rad{};
     std::array<double, 4> last_commanded_speed_mps{0.0, 0.0, 0.0, 0.0};
+    std::array<double, 4> commanded_raw_deg{};
     for (std::size_t j = 0; j < 4; ++j) {
         last_commanded_angle_rad[j] =
             cfg.raw_to_wheel_angle_deg(j, steer_actuators[j].snapshot().position_deg) * M_PI / 180.0;
+    }
+
+    // Per-cycle CSV of commanded vs. actual raw steer angle, for offline
+    // comparison against joystick input -- see usage_and_exit()'s
+    // --log-csv description. One row per 5ms cycle, not gated by
+    // kPrintEveryNCycles, since the periodic printf is too coarse to
+    // catch a brief mismatch (same reasoning as the edge-triggered
+    // bit4/ack trace above).
+    std::ofstream log_csv;
+    if (!args.log_csv_path.empty()) {
+        log_csv.open(args.log_csv_path);
+        if (!log_csv) {
+            std::fprintf(stderr, "error: could not open --log-csv path '%s'\n", args.log_csv_path.c_str());
+            return 1;
+        }
+        log_csv << "t_ms,vx_cmd,vy_cmd,w_cmd";
+        for (const char *m : kModuleNames) {
+            log_csv << ',' << m << "_target_deg," << m << "_actual_deg," << m << "_bit4," << m << "_ack";
+        }
+        log_csv << '\n';
     }
 
     bridge::ChassisLink chassis_link(args.command_port, args.telemetry_port, args.control_port);
@@ -758,8 +786,8 @@ int main(int argc, char **argv) {
             const double speed_delta = target_speed_mps - last_commanded_speed_mps[j];
             last_commanded_speed_mps[j] += clamp_magnitude(speed_delta, max_speed_step);
 
-            steer_actuators[j].set_target_angle_deg(
-                cfg.wheel_angle_to_raw_deg(j, last_commanded_angle_rad[j] * 180.0 / M_PI));
+            commanded_raw_deg[j] = cfg.wheel_angle_to_raw_deg(j, last_commanded_angle_rad[j] * 180.0 / M_PI);
+            steer_actuators[j].set_target_angle_deg(commanded_raw_deg[j]);
             drive_axes[j].set_target_velocity_counts_per_s(mps_to_counts_per_s(cfg, j, last_commanded_speed_mps[j]));
 
             // Rising-edge fault logging: the earlier bring-up checkpoints
@@ -782,6 +810,20 @@ int main(int argc, char **argv) {
             drive_was_faulted[j] = df;
         }
         master.send_receive();
+
+        if (log_csv) {
+            constexpr std::uint16_t kBitNewSetpoint = 1u << 4;
+            constexpr std::uint16_t kBitSetpointAck = 1u << 12;
+            log_csv << cycle * kCycleSeconds * 1000.0 << ',' << target.vx_mps << ',' << target.vy_mps << ','
+                    << target.omega_rad_per_s;
+            for (std::size_t j = 0; j < 4; ++j) {
+                auto s = steer_actuators[j].snapshot();
+                log_csv << ',' << commanded_raw_deg[j] << ',' << s.position_deg << ','
+                        << ((s.controlword_raw & kBitNewSetpoint) != 0) << ','
+                        << ((s.statusword_raw & kBitSetpointAck) != 0);
+            }
+            log_csv << '\n';
+        }
 
         if (cycle % kTelemetryEveryNCycles == 0) {
             std::array<kinematics::ModuleState, 4> measured{};
