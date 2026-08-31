@@ -777,10 +777,22 @@ int main(int argc, char **argv) {
             for (std::size_t j = 0; j < 4; ++j) {
                 auto steer_s = steer_actuators[j].snapshot();
                 auto drive_s = drive_axes[j].snapshot();
-                std::printf("    [%s] steer=%7.2fdeg drive_cmd=%8d drive_act=%8d fault=%s\n", kModuleNames[j],
-                            steer_s.position_deg, drive_s.commanded_velocity_counts_per_s,
-                            drive_s.velocity_actual_counts_per_s,
-                            (steer_s.has_fault || drive_s.has_fault) ? "FAULT" : "-");
+                // bit4 (New Set-point) and bit12 (Set-point Acknowledge)
+                // decoded explicitly -- diagnosing whether Profile
+                // Position moves are actually being accepted, or the
+                // retarget handshake (zeroerr_actuator.cpp) is stuck
+                // waiting on an acknowledge that isn't arriving as
+                // expected. Not needed once that's confirmed working.
+                constexpr std::uint16_t kBitNewSetpoint = 1u << 4;
+                constexpr std::uint16_t kBitSetpointAck = 1u << 12;
+                std::printf(
+                    "    [%s] steer=%7.2fdeg mode=%d cw=0x%04X(bit4=%d) sw=0x%04X(ack=%d) drive_cmd=%8d "
+                    "drive_act=%8d fault=%s\n",
+                    kModuleNames[j], steer_s.position_deg, steer_s.mode_of_operation_display,
+                    steer_s.controlword_raw, (steer_s.controlword_raw & kBitNewSetpoint) != 0,
+                    steer_s.statusword_raw, (steer_s.statusword_raw & kBitSetpointAck) != 0,
+                    drive_s.commanded_velocity_counts_per_s, drive_s.velocity_actual_counts_per_s,
+                    (steer_s.has_fault || drive_s.has_fault) ? "FAULT" : "-");
             }
             std::fflush(stdout);
         }
