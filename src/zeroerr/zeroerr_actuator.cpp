@@ -34,8 +34,10 @@ std::int32_t deg_to_counts(double deg) {
     return static_cast<std::int32_t>(std::lround(deg / kDegPerRev * kEncoderCountsPerRev));
 }
 
-void configure_zeroerr_pdos(ethercat::SoemMaster &master, int slave_index) {
-    master.set_config_func(slave_index, [](ethercat::SoemMaster &m, int idx) {
+void configure_zeroerr_pdos(ethercat::SoemMaster &master, int slave_index, double profile_velocity_deg_s,
+                             double profile_accel_deg_s2, double profile_decel_deg_s2) {
+    master.set_config_func(slave_index, [profile_velocity_deg_s, profile_accel_deg_s2,
+                                          profile_decel_deg_s2](ethercat::SoemMaster &m, int idx) {
         const std::vector<ethercat::PdoMapEntry> rx_entries = {
             {0x607A, 0, 32},  // Target position
             {0x60FE, 0, 32},  // Digital outputs
@@ -58,8 +60,19 @@ void configure_zeroerr_pdos(ethercat::SoemMaster &master, int slave_index) {
         ethercat::assign_single_pdo(m, idx, 0x1C12, kRxPdoIndex);
         ethercat::assign_single_pdo(m, idx, 0x1C13, kTxPdoIndex);
 
-        auto mode = static_cast<std::int8_t>(cia402::ModeOfOperation::CyclicSyncPosition);
+        auto mode = static_cast<std::int8_t>(cia402::ModeOfOperation::ProfilePosition);
         m.sdo_write(idx, cia402::kModesOfOperation, 0, &mode, sizeof(mode));
+
+        // Profile Velocity/Acceleration/Deceleration (plus/s, plus/s^2) --
+        // deg_to_counts()'s scale factor (counts per revolution / 360) is
+        // the same linear conversion regardless of whether the input is a
+        // position, a velocity, or an acceleration, so it's reused as-is.
+        auto profile_velocity = static_cast<std::uint32_t>(deg_to_counts(profile_velocity_deg_s));
+        auto profile_accel = static_cast<std::uint32_t>(deg_to_counts(profile_accel_deg_s2));
+        auto profile_decel = static_cast<std::uint32_t>(deg_to_counts(profile_decel_deg_s2));
+        m.sdo_write(idx, kProfileVelocityIndex, 0, &profile_velocity, sizeof(profile_velocity));
+        m.sdo_write(idx, kProfileAccelerationIndex, 0, &profile_accel, sizeof(profile_accel));
+        m.sdo_write(idx, kProfileDecelerationIndex, 0, &profile_decel, sizeof(profile_decel));
     });
 }
 
@@ -102,10 +115,7 @@ std::optional<bool> ZeroErrActuator::read_sync_error(bool outputs) const {
     return value != 0;
 }
 
-void ZeroErrActuator::set_target_angle_deg(double target_deg) {
-    last_commanded_deg_ = target_deg;
-    write_field<std::int32_t>(master_, slave_index_, pdo_layout::kTargetPositionOffset, deg_to_counts(target_deg));
-}
+void ZeroErrActuator::set_target_angle_deg(double target_deg) { pending_target_counts_ = deg_to_counts(target_deg); }
 
 void ZeroErrActuator::update() {
     last_statusword_ = read_field<std::uint16_t>(master_, slave_index_, pdo_layout::kStatuswordOffset);
@@ -124,12 +134,6 @@ void ZeroErrActuator::update() {
         last_error_code_read_failed_ = false;
     }
 
-    last_controlword_ = fsm_.next_controlword_bits();
-    write_field<std::uint16_t>(master_, slave_index_, pdo_layout::kControlwordOffset, last_controlword_);
-
-    last_digital_outputs_ = fsm_.wants_enable() ? kDigitalOutputsBrakeReleaseBit : 0;
-    write_field<std::uint32_t>(master_, slave_index_, pdo_layout::kDigitalOutputsOffset, last_digital_outputs_);
-
     last_position_counts_ = read_field<std::int32_t>(master_, slave_index_, pdo_layout::kPositionActualOffset);
     last_velocity_counts_per_s_ = read_field<std::int32_t>(master_, slave_index_, pdo_layout::kVelocityActualOffset);
     last_effort_raw_ = read_field<std::int16_t>(master_, slave_index_, pdo_layout::kEffortActualOffset);
@@ -137,14 +141,57 @@ void ZeroErrActuator::update() {
     last_mode_of_operation_display_ =
         read_field<std::uint16_t>(master_, slave_index_, pdo_layout::kModeOfOperationDisplayOffset);
 
-    if (!last_commanded_deg_.has_value()) {
-        // Before the first real set_target_angle_deg() call, hold the
-        // target at the actual measured position -- otherwise a CSP drive
-        // reaching OPERATION_ENABLED with a stale/zero target PDO field
-        // sees a huge instantaneous following error and faults
-        // immediately.
-        write_field<std::int32_t>(master_, slave_index_, pdo_layout::kTargetPositionOffset, last_position_counts_);
+    std::uint16_t controlword = fsm_.next_controlword_bits();
+    // Safe default: hold the target at the actual measured position --
+    // otherwise a drive reaching OPERATION_ENABLED with a stale/zero
+    // target PDO field would see a huge implied move on its first cycle.
+    std::int32_t target_counts_to_write = last_position_counts_;
+
+    if (!fsm_.is_operational()) {
+        // Not enabled: reset the move-triggering state so the next enable
+        // starts with a clean 0 -> 1 edge instead of resuming mid-toggle
+        // (bit4/bit5 are meaningless outside OPERATION_ENABLED anyway --
+        // fsm_'s own bits fully own the controlword here).
+        bit4_high_ = false;
+        needs_falling_edge_first_ = false;
+        triggered_target_counts_.reset();
+    } else if (pending_target_counts_.has_value()) {
+        target_counts_to_write = *pending_target_counts_;
+        // Change Set Immediately: a retarget while already moving blends
+        // into the new target using Profile Acceleration/Deceleration
+        // instead of decelerating to a stop at the old one first (manual
+        // Table 5-9/Fig. 5-4 vs 5-5, p.58-60) -- what continuous steering
+        // tracking needs. New Set-point must still see an actual 0 -> 1
+        // edge for every retarget, even with Change Set Immediately held
+        // high (manual p.57: "the command is rising-edge triggered").
+        controlword |= kControlwordBitChangeSetImmediately;
+        if (needs_falling_edge_first_) {
+            controlword |= kControlwordBitNewSetpoint;
+            bit4_high_ = true;
+            needs_falling_edge_first_ = false;
+            triggered_target_counts_ = pending_target_counts_;
+        } else if (triggered_target_counts_ != pending_target_counts_) {
+            if (bit4_high_) {
+                // Already high from the previous move -- must drop to 0
+                // this cycle so next cycle's rise is a real edge.
+                bit4_high_ = false;
+                needs_falling_edge_first_ = true;
+            } else {
+                controlword |= kControlwordBitNewSetpoint;
+                bit4_high_ = true;
+                triggered_target_counts_ = pending_target_counts_;
+            }
+        } else if (bit4_high_) {
+            controlword |= kControlwordBitNewSetpoint;  // hold at its current level
+        }
     }
+
+    last_controlword_ = controlword;
+    write_field<std::uint16_t>(master_, slave_index_, pdo_layout::kControlwordOffset, last_controlword_);
+    write_field<std::int32_t>(master_, slave_index_, pdo_layout::kTargetPositionOffset, target_counts_to_write);
+
+    last_digital_outputs_ = fsm_.wants_enable() ? kDigitalOutputsBrakeReleaseBit : 0;
+    write_field<std::uint32_t>(master_, slave_index_, pdo_layout::kDigitalOutputsOffset, last_digital_outputs_);
 }
 
 StateSnapshot ZeroErrActuator::snapshot() const {

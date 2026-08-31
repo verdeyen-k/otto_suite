@@ -289,13 +289,11 @@ int main(int argc, char **argv) {
     }
 
     const double max_omega_rad_s = args.max_omega_deg_s * M_PI / 180.0;
-    const double max_steer_rate_rad_s = args.max_steer_rate_deg_s * M_PI / 180.0;
     // Wheel-speed cap uses the (possibly CLI-overridden) RPM value, not
     // cfg's directly, converted with the same wheel radius the drive
     // encoder scale uses.
     const double max_wheel_speed_mps =
         args.max_wheel_speed_rpm / 60.0 * 2.0 * M_PI * cfg.wheel_radius_m();
-    const double max_steer_accel_rad_s2 = args.max_steer_accel_deg_s2 * M_PI / 180.0;
 
     ethercat::SoemMaster master(args.iface);
     int slave_count;
@@ -312,7 +310,8 @@ int main(int argc, char **argv) {
         std::printf("Module %s: steer slave [%d] name='%s', drive slave [%d]/%s name='%s'.\n",
                     kModuleNames[m], t.steer_slave, master.slave_name(t.steer_slave).c_str(), t.drive_slave,
                     axis_name(t.drive_axis), master.slave_name(t.drive_slave).c_str());
-        zeroerr::configure_zeroerr_pdos(master, t.steer_slave);
+        zeroerr::configure_zeroerr_pdos(master, t.steer_slave, args.max_steer_rate_deg_s, args.max_steer_accel_deg_s2,
+                                         args.max_steer_accel_deg_s2);
     }
     std::vector<int> configured_drive_slaves;
     for (const auto &t : args.modules) {
@@ -539,27 +538,23 @@ int main(int argc, char **argv) {
     kinematics::SwerveKinematics kinematics_solver(
         {module_positions[0], module_positions[1], module_positions[2], module_positions[3]});
 
-    // last_commanded_angle_rad/last_commanded_speed_mps are the ACTUAL
-    // last values written to hardware -- both are advanced toward the
-    // live target by at most max_steer_rate/max_accel per cycle, every
-    // cycle, so no transition (startup, a joystick snap, decay-to-zero
-    // during a stale link) can ever be an instant step. Angle is kept as
-    // an unwrapped accumulator (not normalized to [-pi,pi]) since the
-    // actuator's absolute position target has no reason to wrap.
-    //
-    // last_commanded_angular_velocity_rad_s is the extra state that makes
-    // steering a real acceleration-limited (not just velocity-clamped)
-    // profile -- confirmed necessary on real hardware: a velocity clamp
-    // alone lets the commanded angle's rate of change jump from 0 to the
-    // max rate in a single cycle (an implied velocity STEP), which is
-    // exactly what tripped 0x8400 "Velocity Error Exceeds the Limit Value"
-    // per the eRob manual (Table 12-1 specifies a Recommended Acc./Dec.
-    // Time >= 0.3s to reach max angular velocity, not an instant onset).
-    // The drive axis doesn't need the same treatment: it's CSV (velocity
-    // mode), so max_accel_mps2 already limits the actual commanded
-    // velocity directly, not a value merely implied by position deltas.
+    // last_commanded_angle_rad/last_commanded_speed_mps are the last
+    // targets actually sent to hardware. Angle is kept as an unwrapped
+    // accumulator (not normalized to [-pi,pi]) since the actuator's
+    // absolute position target has no reason to wrap. Steering's
+    // acceleration-limited ramp toward this angle now happens on the
+    // actuator itself (Profile Position mode's Profile Accel/Decel, see
+    // zeroerr_actuator.cpp) rather than in software here -- this used to
+    // also be software-ramped, needed to avoid tripping 0x8400 "Velocity
+    // Error Exceeds the Limit Value" on an instant velocity step, but
+    // streaming raw CSP setpoints with no feedforward path turned out to
+    // produce severely underdamped tracking on real hardware; Profile
+    // Position mode's own on-drive profiler replaces both concerns at
+    // once. The drive axis doesn't need either treatment: it's CSV
+    // (velocity mode), so max_accel_mps2 below already limits the actual
+    // commanded velocity directly, not a value merely implied by position
+    // deltas.
     std::array<double, 4> last_commanded_angle_rad{};
-    std::array<double, 4> last_commanded_angular_velocity_rad_s{0.0, 0.0, 0.0, 0.0};
     std::array<double, 4> last_commanded_speed_mps{0.0, 0.0, 0.0, 0.0};
     for (std::size_t j = 0; j < 4; ++j) {
         last_commanded_angle_rad[j] =
@@ -718,25 +713,17 @@ int main(int argc, char **argv) {
                 optimized = kinematics::SwerveKinematics::optimize(desired[j], last_commanded_angle_rad[j]);
             }
 
-            // Target angular velocity is whatever's needed to close the
-            // remaining angle gap within one cycle, capped at the max
-            // rate -- but that target is then itself acceleration-limited
-            // below, never applied directly to position. Not steer_gate
-            // (at rest, or this module's stagger slot hasn't opened yet)
-            // means target velocity 0, so the module decelerates smoothly
-            // to a stop and holds heading, rather than freezing instantly.
-            const double target_angular_velocity_rad_s =
-                steer_gate ? clamp_magnitude(
-                                 std::remainder(optimized.angle_rad - last_commanded_angle_rad[j], 2.0 * M_PI) /
-                                     kCycleSeconds,
-                                 max_steer_rate_rad_s)
-                           : 0.0;
-            const double max_angular_accel_step = max_steer_accel_rad_s2 * kCycleSeconds;
-            const double angular_velocity_delta =
-                target_angular_velocity_rad_s - last_commanded_angular_velocity_rad_s[j];
-            last_commanded_angular_velocity_rad_s[j] +=
-                clamp_magnitude(angular_velocity_delta, max_angular_accel_step);
-            last_commanded_angle_rad[j] += last_commanded_angular_velocity_rad_s[j] * kCycleSeconds;
+            // The steer actuator's own Profile Position move (Change Set
+            // Immediately, see zeroerr_actuator.cpp) now does the
+            // accel/velocity-limited ramp toward the target on-drive --
+            // just hand it the kinematics-optimized angle directly. Not
+            // steer_gate (at rest, or this module's stagger slot hasn't
+            // opened yet) means holding the last commanded angle instead
+            // of retargeting, so the module stays put rather than moving
+            // before its staggered slot opens.
+            if (steer_gate) {
+                last_commanded_angle_rad[j] = optimized.angle_rad;
+            }
 
             const double target_speed_mps = drive_gate ? optimized.speed_mps : 0.0;
             const double max_speed_step = args.max_accel_mps2 * kCycleSeconds;

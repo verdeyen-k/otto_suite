@@ -275,7 +275,8 @@ int main(int argc, char **argv) {
         std::printf("Module %s: steer slave [%d] name='%s', drive slave [%d]/%s name='%s'.\n",
                     kModuleNames[m], t.steer_slave, master.slave_name(t.steer_slave).c_str(), t.drive_slave,
                     axis_name(t.drive_axis), master.slave_name(t.drive_slave).c_str());
-        zeroerr::configure_zeroerr_pdos(master, t.steer_slave);
+        zeroerr::configure_zeroerr_pdos(master, t.steer_slave, cfg.max_steer_rate_deg_s, cfg.max_steer_accel_deg_s2,
+                                         cfg.max_steer_accel_deg_s2);
     }
     std::vector<int> configured_drive_slaves;
     for (const auto &t : args.modules) {
