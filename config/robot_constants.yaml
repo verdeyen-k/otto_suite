@@ -4,7 +4,9 @@
 #
 # Chassis geometry and drivetrain facts are per-robot facts confirmed
 # directly (not derived from a manual): 475mm track width, 625mm
-# wheelbase, 170mm wheel diameter, 524288 counts/rev Copley encoder,
+# wheelbase, 170mm wheel diameter, 4096 counts/rev ZLTech motor encoder
+# (the Copley drive itself has no opinion on this -- it's a configured
+# parameter, not a fixed spec; confirmed from the motor, not the drive),
 # 1:1 direct drive.
 
 ##### Robot Constants #####
@@ -51,7 +53,14 @@ steer_invert_rr: 1
 
 
 ##### Drive Wheels #####
-drive_encoder_counts_per_rev: 524288
+# 4096 counts/rev, from the ZLTech motor's own encoder spec -- NOT read
+# from the Copley drive (Motor Encoder Counts/Rev, object 0x2383
+# sub-index 23, is a value the drive stores as configured, not something
+# it independently knows or verifies; see tools/copley_encoder_check.cpp).
+# The previous 524288 (matching the ZeroErr steering encoder's unrelated
+# 19-bit resolution) was wrong for this motor and made commanded drive
+# speeds come out ~128x too fast.
+drive_encoder_counts_per_rev: 4096
 drive_gear_ratio: 1.0
 
 # Whether each module's drive actuator's positive raw-velocity direction is
