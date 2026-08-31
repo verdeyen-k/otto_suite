@@ -593,6 +593,18 @@ int main(int argc, char **argv) {
     int wake_cycle = 0;
     std::array<bool, 4> steer_was_faulted{false, false, false, false};
     std::array<bool, 4> drive_was_faulted{false, false, false, false};
+    // Edge-triggered Profile Position handshake trace (see the print
+    // below): the periodic per-cycle status print only samples once every
+    // 100 cycles (500ms), far too coarse to see the Set-point Acknowledge
+    // (statusword bit12), which the manual's own timing diagrams show as
+    // a brief pulse -- easily missed entirely by that sampling rate even
+    // when the handshake is working correctly. Tracking the previous
+    // controlword bit4 ("New Set-point") and statusword bit12 per module
+    // lets every actual transition get logged immediately, regardless of
+    // the print cadence, without flooding the terminal (transitions are
+    // inherently rate-limited by the handshake itself).
+    std::array<bool, 4> prev_steer_bit4{false, false, false, false};
+    std::array<bool, 4> prev_steer_ack{false, false, false, false};
 
     auto next_wake = std::chrono::steady_clock::now();
     while (!g_stop.load()) {
@@ -702,6 +714,22 @@ int main(int argc, char **argv) {
         for (std::size_t j = 0; j < 4; ++j) {
             steer_actuators[j].update();
             drive_axes[j].update();
+
+            {
+                constexpr std::uint16_t kBitNewSetpoint = 1u << 4;
+                constexpr std::uint16_t kBitSetpointAck = 1u << 12;
+                auto steer_snap = steer_actuators[j].snapshot();
+                const bool bit4 = (steer_snap.controlword_raw & kBitNewSetpoint) != 0;
+                const bool ack = (steer_snap.statusword_raw & kBitSetpointAck) != 0;
+                if (bit4 != prev_steer_bit4[j] || ack != prev_steer_ack[j]) {
+                    std::printf("[%6.0fms] [%s steer] bit4: %d->%d  ack: %d->%d  (cw=0x%04X sw=0x%04X pos=%.2fdeg)\n",
+                                cycle * kCycleSeconds * 1000.0, kModuleNames[j], prev_steer_bit4[j], bit4,
+                                prev_steer_ack[j], ack, steer_snap.controlword_raw, steer_snap.statusword_raw,
+                                steer_snap.position_deg);
+                    prev_steer_bit4[j] = bit4;
+                    prev_steer_ack[j] = ack;
+                }
+            }
 
             const bool steer_gate =
                 target_nonzero && cycle >= wake_cycle + static_cast<int>(j) * stagger_cycles;
