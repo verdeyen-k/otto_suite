@@ -63,6 +63,9 @@ target_link_libraries(full_shake PRIVATE zeroerr copley)
 add_executable(bus_voltage tools/bus_voltage.cpp)
 target_link_libraries(bus_voltage PRIVATE zeroerr copley)
 
+add_executable(copley_encoder_check tools/copley_encoder_check.cpp)
+target_link_libraries(copley_encoder_check PRIVATE copley)
+
 add_library(robot
   src/robot/robot_config.cpp
 )
