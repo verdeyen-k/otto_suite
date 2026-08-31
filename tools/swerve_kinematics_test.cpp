@@ -561,8 +561,17 @@ int main(int argc, char **argv) {
             if (!drive_active[j] && i >= static_cast<int>(4 + j) * stagger_cycles) {
                 drive_active[j] = true;
             }
+            // Flip-decide against the actuator's REAL measured angle, not
+            // our own last-commanded value -- see teleop.cpp's identical
+            // fix for why: Profile Position mode lets the drive ramp
+            // toward a target over however long it takes, so a stale
+            // assumed "current" position can pick the wrong short way,
+            // exactly how a lagging actuator ends up spinning multiple
+            // turns to catch up once it finally moves.
+            const double actual_wheel_angle_rad =
+                cfg.raw_to_wheel_angle_deg(j, steer_actuators[j].snapshot().position_deg) * M_PI / 180.0;
             kinematics::ModuleState optimized =
-                kinematics::SwerveKinematics::optimize(desired[j], last_commanded_angle_rad[j]);
+                kinematics::SwerveKinematics::optimize(desired[j], actual_wheel_angle_rad);
             if (steer_active[j]) {
                 last_commanded_angle_rad[j] = optimized.angle_rad;
                 steer_actuators[j].set_target_angle_deg(

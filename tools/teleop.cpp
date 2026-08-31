@@ -805,7 +805,20 @@ int main(int argc, char **argv) {
 
             kinematics::ModuleState optimized{};
             if (target_nonzero) {
-                optimized = kinematics::SwerveKinematics::optimize(desired[j], last_commanded_angle_rad[j]);
+                // Flip-decide against the actuator's REAL measured angle,
+                // not our own last-commanded value -- Profile Position
+                // mode lets the drive ramp toward a target over however
+                // long it takes, so "last commanded" can legitimately sit
+                // far from where the wheel physically is at any given
+                // moment. Deciding "which way is shorter" from a stale
+                // assumed position (instead of truth) is how a
+                // lagging/stuck actuator ends up spinning multiple turns
+                // to catch up once it finally moves: the short way
+                // computed from an assumed position can be completely
+                // wrong once the real position has drifted far from it.
+                const double actual_wheel_angle_rad =
+                    cfg.raw_to_wheel_angle_deg(j, steer_actuators[j].snapshot().position_deg) * M_PI / 180.0;
+                optimized = kinematics::SwerveKinematics::optimize(desired[j], actual_wheel_angle_rad);
             }
 
             // The steer actuator's own Profile Position move (Change Set
