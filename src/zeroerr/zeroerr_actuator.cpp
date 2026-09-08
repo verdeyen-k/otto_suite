@@ -132,7 +132,7 @@ void ZeroErrActuator::update() {
     write_field<std::int32_t>(master_, slave_index_, pdo_layout::kTargetVelocityOffset,
                                last_written_velocity_counts_per_s_);
 
-    last_digital_outputs_ = fsm_.wants_enable() ? kDigitalOutputsBrakeReleaseBit : 0;
+    last_digital_outputs_ = (fsm_.wants_enable() || brake_override_) ? kDigitalOutputsBrakeReleaseBit : 0;
     write_field<std::uint32_t>(master_, slave_index_, pdo_layout::kDigitalOutputsOffset, last_digital_outputs_);
 
     last_position_counts_ = read_field<std::int32_t>(master_, slave_index_, pdo_layout::kPositionActualOffset);

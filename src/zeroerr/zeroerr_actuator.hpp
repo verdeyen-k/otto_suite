@@ -81,6 +81,15 @@ public:
     void disable() { fsm_.request_disable(); }
     void fault_reset() { fsm_.request_fault_reset(); }
 
+    // Forces the holding-brake output released even though the drive is
+    // never asked to enable (fsm_.wants_enable() stays false, so target
+    // velocity stays forced to zero and no current is ever commanded --
+    // see update()). Lets the shaft be back-driven by hand to observe
+    // encoder feedback without energizing the motor. Takes effect on the
+    // next update(). Re-engage (pass false) before the process exits;
+    // there's no other fail-safe once PDO cycling stops.
+    void set_brake_override(bool release) { brake_override_ = release; }
+
     [[nodiscard]] bool is_operational() const { return fsm_.is_operational(); }
     [[nodiscard]] bool has_fault() const { return fsm_.has_fault(); }
 
@@ -122,6 +131,7 @@ private:
     int slave_index_;
     cia402::StateMachine fsm_;
     std::int32_t commanded_velocity_counts_per_s_ = 0;
+    bool brake_override_ = false;
 
     std::uint16_t last_statusword_ = 0;
     std::uint16_t last_controlword_ = 0;
