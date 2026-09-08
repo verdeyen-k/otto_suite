@@ -7,13 +7,15 @@
 // Usage: sudo ./zeroerr_state --iface enp1s0 [--slave-index N] [--rate-hz 5]
 //                              [--release-brake]
 //
-// --release-brake pops the holding brake on every monitored actuator
-// without enabling it -- the shaft is left free to be turned by hand so
-// you can watch position/velocity feedback while probing the mechanism.
-// The drive is never commanded (target velocity stays forced to zero),
-// so nothing actively drives the shaft; only the brake's own resistance
-// is removed. The actuator can still move under gravity or an external
-// push once released -- keep a hand on it.
+// --release-brake pops the holding brake on every monitored actuator via
+// the dedicated enable-independent SDO object 0x4602 (manual sec 8.2.57;
+// NOT the 0x60FE PDO brake bit, which the manual only wires up once the
+// drive is enabled) without enabling it -- the shaft is left free to be
+// turned by hand so you can watch position/velocity feedback while
+// probing the mechanism. The drive is never commanded (target velocity
+// stays forced to zero), so nothing actively drives the shaft; only the
+// brake's own resistance is removed. The actuator can still move under
+// gravity or an external push once released -- keep a hand on it.
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -140,9 +142,6 @@ int main(int argc, char **argv) {
     }
 
     if (args.release_brake) {
-        for (auto &actuator : actuators) {
-            actuator.set_brake_override(true);
-        }
         std::fprintf(stderr,
                      "\nWARNING: --release-brake is set -- the holding brake on %zu actuator(s) will be "
                      "released.\n"
@@ -150,6 +149,12 @@ int main(int argc, char **argv) {
                      "move\n"
                      "         under gravity, spring load, or a hand push. Keep a hand on it.\n\n",
                      actuators.size());
+        for (std::size_t i = 0; i < actuators.size(); ++i) {
+            if (!actuators[i].set_brake_override(true)) {
+                std::fprintf(stderr, "  warning: brake-release SDO write failed for slave [%d]\n",
+                             target_slaves[i]);
+            }
+        }
     }
 
     const auto cycle = std::chrono::microseconds(5000);
@@ -222,15 +227,12 @@ int main(int argc, char **argv) {
     }
 
     if (args.release_brake) {
-        // Re-engage before the last PDO exchange rather than just letting
-        // cycling stop -- the brake is only released because we're actively
-        // asking for it every cycle; make the last thing we ask for the
-        // fail-safe state instead of whatever the loop last wrote.
-        for (auto &actuator : actuators) {
-            actuator.set_brake_override(false);
-            actuator.update();
+        for (std::size_t i = 0; i < actuators.size(); ++i) {
+            if (!actuators[i].set_brake_override(false)) {
+                std::fprintf(stderr, "  warning: brake-reengage SDO write failed for slave [%d]\n",
+                             target_slaves[i]);
+            }
         }
-        master.send_receive();
     }
 
     std::printf("\nClosing bus.\n");

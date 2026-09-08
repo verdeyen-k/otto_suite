@@ -66,6 +66,17 @@ void configure_zeroerr_pdos(ethercat::SoemMaster &master, int slave_index) {
 ZeroErrActuator::ZeroErrActuator(ethercat::SoemMaster &master, int slave_index)
     : master_(master), slave_index_(slave_index) {}
 
+bool ZeroErrActuator::set_brake_override(bool release) {
+    // 0x4602 is SDO-only (not PDO-mapped) and takes effect immediately
+    // (manual sec 8.2.57) -- unlike the 0x60FE PDO bit, this is the
+    // documented mechanism for controlling the brake while NOT enabled,
+    // so this is a one-shot mailbox write, not something update() streams
+    // every cycle.
+    std::uint32_t value = release ? 1 : 0;
+    int wkc = master_.sdo_write(slave_index_, kReleaseBrakeSdoIndex, 0, &value, sizeof(value));
+    return wkc > 0;
+}
+
 std::optional<std::uint16_t> ZeroErrActuator::read_error_code_live() const {
     std::uint16_t value = 0;
     int wkc = master_.sdo_read(slave_index_, cia402::kErrorCode, 0, &value, sizeof(value));
@@ -132,7 +143,7 @@ void ZeroErrActuator::update() {
     write_field<std::int32_t>(master_, slave_index_, pdo_layout::kTargetVelocityOffset,
                                last_written_velocity_counts_per_s_);
 
-    last_digital_outputs_ = (fsm_.wants_enable() || brake_override_) ? kDigitalOutputsBrakeReleaseBit : 0;
+    last_digital_outputs_ = fsm_.wants_enable() ? kDigitalOutputsBrakeReleaseBit : 0;
     write_field<std::uint32_t>(master_, slave_index_, pdo_layout::kDigitalOutputsOffset, last_digital_outputs_);
 
     last_position_counts_ = read_field<std::int32_t>(master_, slave_index_, pdo_layout::kPositionActualOffset);

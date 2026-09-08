@@ -72,4 +72,11 @@ constexpr int kTxBytes = 18;
 
 constexpr std::uint32_t kDigitalOutputsBrakeReleaseBit = 1u << 0;
 
+// Manual sec 8.2.57: SDO-only (not PDO-mappable), UDINT, "Immediately"
+// update, 0=brake/1=release brake. Explicitly documented as the
+// enable-independent brake override -- "this command cannot be operated
+// in the enabled state" -- distinct from 0x60FE's bit0, which is the
+// run-time brake output tied to the drive actually being enabled.
+constexpr std::uint16_t kReleaseBrakeSdoIndex = 0x4602;
+
 }  // namespace zeroerr

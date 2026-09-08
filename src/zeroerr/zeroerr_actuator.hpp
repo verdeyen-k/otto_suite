@@ -81,14 +81,21 @@ public:
     void disable() { fsm_.request_disable(); }
     void fault_reset() { fsm_.request_fault_reset(); }
 
-    // Forces the holding-brake output released even though the drive is
-    // never asked to enable (fsm_.wants_enable() stays false, so target
-    // velocity stays forced to zero and no current is ever commanded --
-    // see update()). Lets the shaft be back-driven by hand to observe
-    // encoder feedback without energizing the motor. Takes effect on the
-    // next update(). Re-engage (pass false) before the process exits;
-    // there's no other fail-safe once PDO cycling stops.
-    void set_brake_override(bool release) { brake_override_ = release; }
+    // Releases (or re-engages) the holding brake via the dedicated SDO
+    // object 0x4602 ("Release brake", manual sec 8.2.57), independent of
+    // the CiA-402 enable state machine -- the vendor-documented mechanism
+    // for popping the brake while NOT enabled ("this command cannot be
+    // operated in the enabled state" per the manual), as opposed to
+    // 0x60FE's brake bit, which is a run-time PDO output tied to the
+    // drive actually being enabled and had no physical effect when tried
+    // while disabled. Lets the shaft be back-driven by hand to observe
+    // encoder feedback without energizing the motor -- target velocity
+    // stays forced to zero regardless (see update()) since fsm_ is never
+    // asked to enable. One-shot mailbox write, not a per-cycle output;
+    // call again with false to re-engage before the process exits, since
+    // there's no other fail-safe once PDO cycling stops. Returns false if
+    // the SDO write failed (mailbox abort/timeout).
+    bool set_brake_override(bool release);
 
     [[nodiscard]] bool is_operational() const { return fsm_.is_operational(); }
     [[nodiscard]] bool has_fault() const { return fsm_.has_fault(); }
@@ -131,7 +138,6 @@ private:
     int slave_index_;
     cia402::StateMachine fsm_;
     std::int32_t commanded_velocity_counts_per_s_ = 0;
-    bool brake_override_ = false;
 
     std::uint16_t last_statusword_ = 0;
     std::uint16_t last_controlword_ = 0;
