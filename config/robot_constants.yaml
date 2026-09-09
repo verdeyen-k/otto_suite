@@ -17,8 +17,13 @@ wheel_diameter_m: 0.172
 ##### Robot performance constraints #####
 # Defaults for teleop's --max-speed-mps/--max-omega-deg-s/etc. -- pass the
 # matching CLI flag on a given run to override without editing this file.
-max_speed_mps: 0.5
-max_omega_deg_s: 60
+# Raised 2026-09-09 to compensate for drive_encoder_counts_per_rev's 128x
+# fix (see git history) making actual commanded speed match the intended
+# physical value instead of running far faster than the stick asked for --
+# 1.3 m/s / 150 deg/s is close to the ~1.44 m/s hard ceiling
+# max_wheel_speed_rpm below already derates all modules to.
+max_speed_mps: 1.3
+max_omega_deg_s: 150
 max_accel_mps2: 1
 
 ###### Steering Actuators #####
