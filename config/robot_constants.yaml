@@ -90,7 +90,13 @@ max_wheel_speed_rpm: 160
 module_steer_slave_fl: 8
 module_drive_slave_fl: 2
 module_drive_axis_fl: b
-module_steer_slave_fr: 9
+# Live-tested 2026-09-09 with the z-stage temporarily wired in-line on the
+# bus ahead of FR (shifting everything downstream of it by +3 slave
+# indices) -- FR's steer axis showed up as slave 12, not 9, while the
+# z-stage was connected. If the z-stage comes back off and FR stops
+# responding at 12, re-verify with slaveinfo/zeroerr_state before assuming
+# this is still right.
+module_steer_slave_fr: 12
 module_drive_slave_fr: 3
 module_drive_axis_fr: b
 module_steer_slave_rl: 6
